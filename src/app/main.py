@@ -2,9 +2,10 @@
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, func
 from sqlalchemy.exc import OperationalError
 from typing import Annotated
+from . import models
 from .database import lifespan, get_db
 from .crud import (
     create_prompt,
@@ -15,6 +16,9 @@ from .crud import (
 )
 from .schemas import PromptCreate, PromptUpdate, PromptResponse, PromptList
 from .config import settings
+
+# 确保在 FastAPI 启动前，数据库表已经通过 Base.metadata 注册
+# models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="LLM Prompt Management System",
@@ -27,13 +31,13 @@ DBSession = Annotated[Session, Depends(lambda: get_db(app))]
 
 # ==================== 健康检查端点 ====================
 
-@app.get("/", summary="根路径")
+@app.get("/", summary="根路径-验证热重载")
 async def read_root():
     """
     欢迎页面，返回系统信息
     """
     return {
-        "message": "Welcome to LLM Prompt Management System!",
+        "message": "Welcome to the NEW and IMPROVED LLM Prompt Management System!", # 修改这里
         "version": "0.1.0",
         "description": "API for managing LLM prompt templates"
     }
@@ -67,7 +71,10 @@ async def db_health_check(db: DBSession):
 @app.post("/prompts", response_model=PromptResponse, status_code=201, summary="创建新提示词")
 async def create_prompt(prompt: PromptCreate, db: DBSession):
     """
-    创建一个新的提示词模板
+    创建一个新的提示词模板。FastAPI 会自动处理：
+    1. 校验请求体是否符合 PromptCreate schema。
+    2. 调用 get_db() 获取数据库 session，并注入到 db 参数。
+    3. 将返回值（SQLAlchemy对象）通过 PromptResponse schema 转换为 JSON 响应。
 
     - **title**: 提示词标题（必填）
     - **content**: 提示词内容（必填）
@@ -88,7 +95,9 @@ async def list_prompts(
     - **limit**: 返回的最大记录数（默认100，最大100）
     """
     prompts = get_prompts(db, skip, limit)
-    return {"total": len(prompts), "prompts": prompts}
+    # 【优化点】计算数据库中 prompt 的总数，用于分页
+    total_count = db.query(func.count(models.Prompt.id)).scalar()
+    return {"total": total_count, "prompts": prompts}
 
 @app.get("/prompts/{prompt_id}", response_model=PromptResponse, summary="获取特定提示词")
 async def get_prompt(prompt_id: int, db: DBSession):
@@ -99,6 +108,7 @@ async def get_prompt(prompt_id: int, db: DBSession):
     """
     prompt = get_prompt(db, prompt_id)
     if not prompt:
+        # 如果 CRUD 函数返回 None，说明记录不存在，抛出 404 异常。
         raise HTTPException(status_code=404, detail="Prompt not found")
     return prompt
 

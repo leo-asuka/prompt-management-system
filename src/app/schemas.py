@@ -1,3 +1,4 @@
+# src/app/schemas.py
 from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
@@ -17,9 +18,9 @@ class PromptCreate(PromptBase):
 
 class PromptUpdate(BaseModel):
     """更新提示词时的数据模式（所有字段可选）"""
-    title: Optional[str] = Field(None, min_length=1, max_length=200)
-    content: Optional[str] = Field(None, min_length=1)
-    category: Optional[str] = Field(None, max_length=100)
+    title: Optional[str] = Field(None, min_length=1, max_length=200, description="新的 Prompt 标题")
+    content: Optional[str] = Field(None, min_length=1, description="新的 Prompt 内容")
+    category: Optional[str] = Field(None, max_length=50, description="新的 Prompt 分类")
 
 
 class PromptResponse(PromptBase):
@@ -29,7 +30,10 @@ class PromptResponse(PromptBase):
     created_at: datetime
     updated_at: datetime
 
+    # Pydantic V2 的配置项
     class Config:
+        # from_attributes = True 告诉 Pydantic 模型可以从 ORM 对象（数据库模型实例）中读取数据。
+        # 这样就可以直接把 SQLAlchemy 的 Prompt 对象传给 PromptResponse 来创建响应。
         from_attributes = True  # 允许从 ORM 模型创建
 
 

@@ -14,24 +14,25 @@ services:
       - ./src:/home/appuser/app/src
     env_file:
       - .env  # 从 .env 文件加载环境变量
+    command: uvicorn src.app.main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       db:
-        condition: service_healthy  # 等待数据库健康检查通过
+        condition: service_healthy   # 依赖 db 服务，并且要等 db 服务健康检查通过后才启动
     restart: unless-stopped
 
   # 2. 数据库服务 (PostgreSQL)
   db:
     image: postgres:16-alpine  # 使用轻量级的 alpine 版 postgres
-    # ports:
-      # (可选) 如果您想从主机直接访问数据库，请取消注释下一行
-      # - "5432:5432"
+    ports:
+    #   (可选) 如果您想从主机直接访问数据库，请取消注释下一行
+      - "5432:5432" # 将主机的 5432 端口映射到容器，方便使用外部工具连接数据库
     volumes:
       # 'postgres_data' 是一个具名卷，用于持久化数据库数据
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data/
     env_file:
       - .env  # 从 .env 文件加载 POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"] # 健康检查
       interval: 10s
       timeout: 5s
       retries: 5
@@ -39,4 +40,4 @@ services:
 
 # 定义具名卷，用于数据持久化
 volumes:
-  postgres_data:
+  postgres_data: # 定义一个命名的 volume 用于数据持久化
