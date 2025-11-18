@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 依赖缓存
+.pdm-cache/
+.pytest_cache/
+
+# 配置文件
+.env
+*.env.local
+
+# Docker 数据 (防止递归复制)
+postgres_data/
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+
+# 文档
+README.md
+*.md
+
+# 测试
+tests/
+.pytest_cache/
+.coverage

@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  # 1. API 服务 (我们的 FastAPI 应用)
+  api:
+    build:
+      context: .  # 使用当前目录的 Dockerfile
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8000"  # 将主机的8002端口映射到容器的8000端口
+    volumes:
+      # 挂载 src 目录以实现热重载 (仅在开发时推荐)
+      # 容器内的路径必须与 Dockerfile 中的 WORKDIR 匹配
+      - ./src:/home/appuser/app/src
+    env_file:
+      - .env  # 从 .env 文件加载环境变量
+    depends_on:
+      db:
+        condition: service_healthy  # 等待数据库健康检查通过
+    restart: unless-stopped
+
+  # 2. 数据库服务 (PostgreSQL)
+  db:
+    image: postgres:16-alpine  # 使用轻量级的 alpine 版 postgres
+    # ports:
+      # (可选) 如果您想从主机直接访问数据库，请取消注释下一行
+      # - "5432:5432"
+    volumes:
+      # 'postgres_data' 是一个具名卷，用于持久化数据库数据
+      - postgres_data:/var/lib/postgresql/data
+    env_file:
+      - .env  # 从 .env 文件加载 POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+# 定义具名卷，用于数据持久化
+volumes:
+  postgres_data:

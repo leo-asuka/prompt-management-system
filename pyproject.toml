@@ -1,0 +1,26 @@
+[project]
+name = "llm-prompt-manager"
+version = "0.1.0"
+description = "LLM Prompt Management System - Week 1 demo project for AI Engineering course."
+authors = [
+    {name = "LLM-X Course", email = "course@example.com"},
+]
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.1",
+    "pydantic-settings>=2.3.4",  # 用于从.env读取配置
+    "psycopg2-binary>=2.9.9",    # PostgreSQL驱动
+    "sqlalchemy>=2.0.31",        # ORM
+]
+requires-python = ">=3.11"
+readme = "README.md"
+license = {text = "MIT"}
+
+[tool.pdm.dev-dependencies]
+dev = [
+    "pytest>=8.2.2",
+]
+
+[tool.pdm.scripts]
+# 脚本别名，方便本地开发
+dev = "uvicorn src.main.app:app --reload --host 0.0.0.0 --port 8000"
