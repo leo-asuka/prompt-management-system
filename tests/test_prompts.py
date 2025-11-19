@@ -19,6 +19,16 @@ def test_health_check():
         assert response.json() == {"status": "ok"}
     print("\n✅ Health check passed!")
 
+def test_db_health_check():
+    """测试数据库连接健康检查端点"""
+    with httpx.Client() as client:
+        response = client.get(f"{BASE_URL}/db_health")
+        # 断言：检查 HTTP 状态码是否为 200 (OK)
+        assert response.status_code == 200
+        # 断言：检查返回的 JSON 内容是否符合预期
+        assert response.json() == {"status": "ok", "database_connection": "successful"}
+    print("\n✅ DB health check passed!")
+
 def test_create_prompt():
     """
     测试用例 1: POST /prompts - 创建一个新的 Prompt
