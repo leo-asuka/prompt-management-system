@@ -640,7 +640,7 @@ htmlcov/
 
     添加后，重启 Docker Compose (`docker compose up --build`) 来重新构建镜像并安装新的依赖。
 
-### **第二步：更新数据模型 (`models.py`)**
+#### **第二步：更新数据模型 (`models.py`)**
 
 我们需要创建 `User` 表，并在 `Prompt` 表中添加一个字段来记录是谁创建了这个 Prompt。
 
@@ -692,7 +692,7 @@ class Prompt(Base):
 ...
 ```
 
-### **第三步：更新 Pydantic Schemas (`schemas.py`)**
+#### **第三步：更新 Pydantic Schemas (`schemas.py`)**
 
 为 User 创建新的 Schema，并更新 `PromptResponse` 以便能显示创建者的信息。
 
@@ -724,7 +724,7 @@ class PromptResponse(PromptBase):
 ...
 ```
 
-### **第四步：更新 CRUD 操作 (`crud.py`)**
+#### **第四步：更新 CRUD 操作 (`crud.py`)**
 
 现在的 CRUD 操作需要知道是**哪个用户**在执行操作。
 
@@ -798,13 +798,13 @@ def delete_prompt(db: Session, db_prompt: models.Prompt):
     return None
 ```
 
-### **第五步：改造 API 层 (`main.py`) 并实现权限控制**
+#### **第五步：改造 API 层 (`main.py`) 并实现权限控制**
 
 实现一个**简单但有效**的用户身份验证机制。在真实的生产项目中，通常会使用 OAuth2 和 JWT (JSON Web Tokens) 来做这件事。但为了聚焦在本次作业的核心目标——**权限逻辑**上，我们将采用一种更简单的方式：**通过一个自定义请求头 `X-User-ID` 来指定当前操作的用户**。
 
 这可以让我们清晰地实现“用户A不能修改用户B的数据”这一核心逻辑。
 
-#### 1. 创建获取当前用户的依赖项
+##### 1. 创建获取当前用户的依赖项
 
 首先，需要一个 FastAPI 依赖项，它能从请求头中读取用户 ID，并返回对应的用户数据库对象。
 
@@ -834,7 +834,7 @@ async def get_current_user(x_user_id: Annotated[int, Header()], db: DBSession):
 CurrentUser = Annotated[models.User, Depends(get_current_user)]
 ```
 
-#### 2. 添加 User 相关的新端点
+##### 2. 添加 User 相关的新端点
 
 现在，我们在 `main.py` 中添加用户注册和查询用户 Prompts 的端点。
 
@@ -870,7 +870,7 @@ async def get_user_prompts_endpoint(user_id: int, db: DBSession):
     return prompts
 ```
 
-#### 3. 为 Prompt 端点添加权限控制
+##### 3. 为 Prompt 端点添加权限控制
 
 这是最关键的一步。将修改 `create`, `update`, `delete` 端点，让它们使用 `get_current_user` 依赖，并加入权限检查。
 
@@ -944,7 +944,7 @@ async def delete_prompt_endpoint(prompt_id: int, db: DBSession, current_user: Cu
 
 **注意**：设计`GET /prompts` 和 `GET /prompts/{id}` 保持原样，允许任何用户查看。
 
-### **第六步：编写新的测试用例**
+#### **第六步：编写新的测试用例**
 
 代码改完了，现在必须用测试来验证新功能和权限逻辑是否正确。
 
@@ -1084,7 +1084,7 @@ def test_8_alice_can_delete_her_own_prompt():
         print("\n✅ Alice successfully deleted her own prompt")
 ```
 
-### **第七步：重启、测试和提交**
+#### **第七步：重启、测试和提交**
 
 1. **重启 Docker Compose**
 
@@ -1124,7 +1124,7 @@ def test_8_alice_can_delete_her_own_prompt():
     - 将这个脚本应用到数据库，数据库的结构就被安全地更新了，并且保留了所有现有数据。这个知识点超出了本次作业的基础要求，但理解遇到的这个报错的本质，正是学习数据库迁移重要性的第一步。
 
 3. **提交你的成果**
-    你已经完成了一个非常重要的进阶功能！现在是时候用一次清晰的 Git 提交来记录它了。
+    完成了一个进阶功能，现在用一次清晰的 Git 提交来记录它。
 
     ```bash
     # 将所有修改过的和新建的文件添加到暂存区
@@ -1134,6 +1134,4 @@ def test_8_alice_can_delete_her_own_prompt():
     git commit -m "feat(auth): implement user system and ownership-based authorization"
     ```
 
-    - 这个提交信息表示：增加了一个新功能(`feat`)，功能范围是认证(`auth`)，内容是实现了用户系统和基于所有权的授权机制。*
-
-恭喜你！你已经成功地将一个简单的 CRUD 应用升级为了一个支持多用户的、有权限控制的系统。这是从玩具项目迈向真实应用的一大步。
+### 2.目标：实现用户与权限系统
