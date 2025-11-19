@@ -1,12 +1,10 @@
 # src/app/crud.py
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, desc
 from sqlalchemy.exc import IntegrityError
-from .models import Prompt
-from .schemas import PromptCreate, PromptUpdate
 from typing import List, Optional
-from . import models, schemas  # 导入 models 和 schemas
-from . import llm_client # 导入 llm_client
+from . import models, schemas, llm_client
+from .models import Prompt
 import bcrypt
 
 def _hash_password(password: str) -> str:
@@ -89,15 +87,16 @@ def get_ratings_for_prompt(db: Session, prompt_id: int, skip: int = 0, limit: in
              .limit(limit)\
              .all()
 
-# ==================== Prompt CRUD 更新 ====================
+# ==================== Prompt CRUD ====================
 # 创建 Prompt 时需要知道是哪个用户创建的
 def create_prompt(db: Session, prompt: schemas.PromptCreate, user_id: int):
     """
-    在数据库中创建一个新的 Prompt 记录。
+    在数据库中创建一个新的 Prompt 记录。自动创建版本 1
     :param db: 数据库 Session。
     :param prompt: Pydantic 模型，包含创建所需的数据。
     :return: 创建好的 SQLAlchemy Prompt 模型实例。
     """
+    # 1. 创建主 Prompt 记录
     # 将 Pydantic 模型 (prompt) 转换为 SQLAlchemy 模型 (db_prompt)
     db_prompt = Prompt(
         # title=prompt.title,
@@ -109,6 +108,16 @@ def create_prompt(db: Session, prompt: schemas.PromptCreate, user_id: int):
     db.add(db_prompt)  # 将新对象添加到 Session 中（暂存）
     db.commit()      # 将暂存的更改提交到数据库
     db.refresh(db_prompt) # 刷新 db_prompt 对象，以获取数据库生成的值（如 id, created_at）
+    # 2. 创建版本 1 快照
+    version = models.PromptVersion(
+        prompt_id=db_prompt.id,
+        version_number=1,
+        title=db_prompt.title,
+        content=db_prompt.content,
+        category=db_prompt.category
+    )
+    db.add(version)
+    db.commit()
     return db_prompt
 
 def get_prompts_by_user(db: Session, user_id: int, skip: int = 0, limit: int = 100):
@@ -132,7 +141,7 @@ def get_prompts(
         for tag_name in tags:
             base_query = base_query.filter(models.Prompt.tags.any(name=tag_name))
     
-    # 【修复】先计算总数
+    # 先计算总数
     total_query = base_query.group_by(models.Prompt.id)
     total = total_query.count()
 
@@ -175,15 +184,71 @@ def get_prompt_with_average_rating(db: Session, prompt_id: int):
     return None
 
 def update_prompt(db: Session, db_prompt: models.Prompt, prompt_update: schemas.PromptUpdate):
-    """更新一个已存在的 Prompt 记录。这个函数现在直接接收一个 SQLAlchemy 模型实例 (db_prompt)，而不是 prompt_id。"""
+    """更新一个已存在的 Prompt 记录。这个函数现在直接接收一个 SQLAlchemy 模型实例 (db_prompt)，而不是 prompt_id。更新 Prompt，并自动创建新版本"""
+    # 1. 更新主表数据
     update_data = prompt_update.model_dump(exclude_unset=True)
+    # 如果没有实际数据更新，直接返回
+    if not update_data:
+        return db_prompt
+
     for field, value in update_data.items():
         setattr(db_prompt, field, value)
 
+    # 2. 计算下一个版本号
+    # 查询当前最大的版本号
+    last_version = db.query(func.max(models.PromptVersion.version_number))\
+                     .filter(models.PromptVersion.prompt_id == db_prompt.id)\
+                     .scalar()
+    new_version_number = (last_version or 0) + 1
+
+    # 3. 创建新版本快照
+    new_version = models.PromptVersion(
+        prompt_id=db_prompt.id,
+        version_number=new_version_number,
+        title=db_prompt.title,
+        content=db_prompt.content,
+        category=db_prompt.category
+    )
+
     db.add(db_prompt)  # 虽然 SQLAlchemy 跟踪了对象，但显式 add 更清晰
+    db.add(new_version)
     db.commit()
     db.refresh(db_prompt)
     return db_prompt
+
+def get_prompt_versions(db: Session, prompt_id: int):
+    """获取 Prompt 的所有版本"""
+    return db.query(models.PromptVersion)\
+             .filter(models.PromptVersion.prompt_id == prompt_id)\
+             .order_by(desc(models.PromptVersion.version_number))\
+             .all()
+
+def get_prompt_version(db: Session, prompt_id: int, version_number: int):
+    """获取特定版本"""
+    return db.query(models.PromptVersion)\
+             .filter(models.PromptVersion.prompt_id == prompt_id, 
+                     models.PromptVersion.version_number == version_number)\
+             .first()
+
+def rollback_prompt(db: Session, db_prompt: models.Prompt, version_number: int):
+    """
+    回滚到指定版本。
+    策略：不是删除历史，而是将指定版本的内容复制出来，作为最新的更新（生成新版本）。
+    这样保证了历史的线性向前，不会丢失“回滚”这一操作记录。
+    """
+    target_version = get_prompt_version(db, db_prompt.id, version_number)
+    if not target_version:
+        return None
+
+    # 构造更新数据，覆盖当前 Prompt
+    prompt_update = schemas.PromptUpdate(
+        title=target_version.title,
+        content=target_version.content,
+        category=target_version.category
+    )
+    
+    # 复用 update_prompt 逻辑，它会自动处理“创建新版本”的逻辑
+    return update_prompt(db, db_prompt, prompt_update)
 
 def delete_prompt(db: Session, db_prompt: models.Prompt):
     """删除一个 Prompt 记录。这个函数现在直接接收一个 SQLAlchemy 模型实例 (db_prompt)。"""

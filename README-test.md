@@ -2384,18 +2384,22 @@ class RatingResponse(BaseModel):
 
 # --- 更新：PromptResponse Schema ---
 class PromptResponse(PromptBase):
+    """返回提示词数据时的模式"""
     id: int
     usage_count: int
     created_at: datetime
     updated_at: datetime
-    owner: UserResponse
+    owner: UserResponse  # 嵌套 UserResponse Schema
+    # 在返回 Prompt 时，包含其所有标签
     tags: List[TagResponse] = []
-    
-    # --- 新增 ---
+
     average_rating: Optional[float] = Field(None, description="该 Prompt 的平均评分")
 
+    # Pydantic V2 的配置项
     class Config:
-        from_attributes = True
+        # from_attributes = True 告诉 Pydantic 模型可以从 ORM 对象（数据库模型实例）中读取数据。
+        # 这样就可以直接把 SQLAlchemy 的 Prompt 对象传给 PromptResponse 来创建响应。
+        from_attributes = True  # 允许从 ORM 模型创建
 
 # ... (PromptList, PromptExecuteRequest, PromptExecutionResponse schemas 保持不变) ...
 ```
@@ -2442,41 +2446,34 @@ def get_prompts(
     skip: int = 0,
     limit: int = 100,
     tags: Optional[List[str]] = None,
-    sort: Optional[str] = None # 新增排序参数
+    sort: Optional[str] = None
 ):
-    """
-    获取 Prompt 列表，现在支持按平均分排序。
-    """
-    # 将平均分计算定义为一个 labeled column
     avg_rating = func.avg(models.Rating.score).label("average_rating")
     
-    # 基础查询，使用 outerjoin 以包含没有评分的 Prompt
-    query = db.query(models.Prompt, avg_rating)\
-              .outerjoin(models.Rating)\
-              .group_by(models.Prompt.id)
+    base_query = db.query(models.Prompt)\
+                   .outerjoin(models.Rating)
 
     if tags:
         for tag_name in tags:
-            query = query.filter(models.Prompt.tags.any(name=tag_name))
+            base_query = base_query.filter(models.Prompt.tags.any(name=tag_name))
     
-    # 处理排序逻辑
-    if sort == "rating":
-        # 按计算出的平均分降序排列。nullslast() 会将没有评分的（NULL）排在最后。
-        query = query.order_by(avg_rating.desc().nullslast())
-    else:
-        # 默认按创建时间排序
-        query = query.order_by(models.Prompt.created_at.desc())
+    # 先计算总数
+    total_query = base_query.group_by(models.Prompt.id)
+    total = total_query.count()
 
-    # 在应用分页前计算总数
-    total = query.count()
+    # 现在构建包含聚合和排序的主查询
+    main_query = base_query.add_columns(avg_rating)\
+                           .group_by(models.Prompt.id)
+
+    if sort == "rating":
+        main_query = main_query.order_by(avg_rating.desc().nullslast())
+    else:
+        main_query = main_query.order_by(models.Prompt.created_at.desc())
+
+    results = main_query.offset(skip).limit(limit).all()
     
-    # 应用分页
-    results = query.offset(skip).limit(limit).all()
-    
-    # 查询结果是一个元组 (Prompt, average_rating) 的列表，我们需要将它们合并。
     prompts_with_ratings = []
     for prompt, rating in results:
-        # 将计算出的平均分动态地附加到 Prompt 对象上
         prompt.average_rating = rating if rating is not None else 0.0
         prompts_with_ratings.append(prompt)
 
@@ -2500,7 +2497,7 @@ from .schemas import RatingCreate, RatingResponse
 
 # --- 新增：评分相关的 API 端点 ---
 
-@app.post("/prompts/{prompt_id}/ratings", response_model=RatingResponse, summary="为一个 Prompt 评分")
+@app.post("/prompts/{prompt_id}/ratings", response_model=RatingResponse, status_code=201, summary="为一个 Prompt 评分")
 async def rate_prompt_endpoint(
     prompt_id: int,
     rating: RatingCreate,
@@ -2544,7 +2541,7 @@ async def get_prompt_ratings_endpoint(prompt_id: int, db: DBSession):
 
 
 # --- 更新：list_prompts_endpoint ---
-@app.get("/prompts", response_model=schemas.PromptList, summary="列出所有 Prompt (支持筛选和排序)")
+@app.get("/prompts", response_model=schemas.PromptList, summary="列出所有提示词 (支持按标签筛选)")
 async def list_prompts_endpoint(
     db: DBSession,
     skip: int = Query(0, ge=0),
@@ -2553,8 +2550,10 @@ async def list_prompts_endpoint(
     sort: Optional[str] = Query(None, description="排序字段。使用 'rating' 按平均分排序。")
 ):
     """
-    获取所有 Prompt 的列表。
-    支持分页、按标签筛选以及按平均分排序。
+    获取所有提示词列表（支持分页）
+
+    - **skip**: 跳过的记录数（默认0）
+    - **limit**: 返回的最大记录数（默认100，最大100）
     """
     tag_list = tags.split(',') if tags else None
     prompts, total = crud.get_prompts(db, skip=skip, limit=limit, tags=tag_list, sort=sort)
@@ -2596,9 +2595,10 @@ def create_prompt_for_rating(user_id, title):
 @pytest.fixture(scope="module", autouse=True)
 def setup_for_rating_tests():
     print("\n--- Setting up data for rating tests ---")
-    user_george = create_user_for_rating("george", "pass1")
-    user_helen = create_user_for_rating("helen", "pass2")
-    user_ian = create_user_for_rating("ian", "pass3")
+    # --- 【修复】修改密码，使其长度至少为 6 ---
+    user_george = create_user_for_rating("george", "password_g")
+    user_helen = create_user_for_rating("helen", "password_h")
+    user_ian = create_user_for_rating("ian", "password_i")
     
     test_state["user_george_id"] = user_george["id"]
     test_state["user_helen_id"] = user_helen["id"]
@@ -2624,7 +2624,7 @@ def test_1_helen_rates_prompt():
     
     with httpx.Client() as client:
         response = client.post(f"{BASE_URL}/prompts/{prompt_id}/ratings", json={"score": 5}, headers=headers)
-        assert response.status_code == 200 # 应该是 200 OK 或 201 Created，取决于你的实现
+        assert response.status_code == 201 # 应该是 200 OK 或 201 Created，取决于你的实现
         data = response.json()
         assert data["score"] == 5
         assert data["user_id"] == helen_id
@@ -2707,24 +2707,46 @@ def test_5_sort_prompts_by_rating():
     docker compose up --build
     ```
 
-    **注意**：观察日志，确保你没有看到 `OpenAI 客户端初始化失败` 的警告。如果你看到了，请检查 `.env` 文件中的 `OPENAI_API_KEY` 是否正确设置。
-
 2. **运行所有测试**
     打开第二个终端，运行测试脚本。
 
     ```bash
-    ./test.sh tests/test_llm_integration.py
+    ./test.sh tests/test_ratings.py
     ```
 
     ```bash
-    ✅ Real LLM call successful. Response: 'Arr, matey, the core of relativity be that the laws o’ physics be the same for all sailors, no matter how fast their ship be sailin’!'
-    ✅ Token usage recorded: {'completion_tokens': 36, 'prompt_tokens': 32, 'total_tokens': 68, 'completion_tokens_details': {'accepted_prediction_tokens': None, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': None}, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}}
+    $ ./test.sh tests/test_ratings.py
+    --- 🚀 Starting API tests against running Docker container ---
+    --- Target URL: http://localhost:8002 ---
+
+    ================================================= test session starts =================================================
+    platform win32 -- Python 3.11.5, pytest-7.4.0, pluggy-1.0.0 -- D:\Anaconda\python.exe
+    cachedir: .pytest_cache
+    rootdir: D:\code\agent-v1\LLM-X\LLM-X-Season2\Lesson1\prompt-management-system
+    configfile: pytest.ini
+    plugins: anyio-4.11.0, depends-1.0.1
+    collected 5 items                                                                                                      
+
+    tests/test_ratings.py::test_1_helen_rates_prompt 
+    --- Setting up data for rating tests ---
+    --- Rating test setup complete ---
+
+    ✅ Helen successfully rated a prompt.
     PASSED
-    tests/test_llm_integration.py::test_2_list_real_execution_history
-    ✅ List real execution history test passed
+    tests/test_ratings.py::test_2_george_cannot_rate_his_own_prompt 
+    ✅ Owner was correctly forbidden from rating their own prompt.
+    PASSED
+    tests/test_ratings.py::test_3_helen_cannot_rate_same_prompt_twice 
+    ✅ User was correctly forbidden from rating the same prompt twice.
+    PASSED
+    tests/test_ratings.py::test_4_ian_rates_prompt_and_check_average 
+    ✅ Average rating was calculated correctly (4.0).
+    PASSED
+    tests/test_ratings.py::test_5_sort_prompts_by_rating 
+    ✅ Prompts were correctly sorted by rating in descending order.
     PASSED
 
-    ==================================================== 2 passed in 8.63s ===================================================== 
+    ================================================= 5 passed in 18.66s ==================================================
 
     --- ✅ All tests passed successfully! ---
     ```
@@ -2733,6 +2755,563 @@ def test_5_sort_prompts_by_rating():
     完成
 
     ```bash
-    # git add .
-    git commit -m "feat(llm): implement prompt execution with OpenAI and history tracking"
+    git add .
+    git commit -m "feat(ratings): implement prompt rating system with sorting"
+    ```
+
+### 5.目标：实现评分系统
+
+**核心任务分解：**
+
+1. [✅]**Models**：新增 `PromptVersion` 表，用于存储历史快照（标题、内容、分类、版本号）。
+2. [✅]**Schemas**：新增版本相关的响应结构。
+3. [✅]**CRUD**：创建 Prompt 时，自动创建 `Version 1`，更新 Prompt 时，自动创建 `Version N+1`，将 Prompt 的内容恢复到指定版本的状态（这通常会生成一个新的最新版本，内容与旧版本一致，以保留回滚记录）。
+4. [✅]**Main**：暴露查看版本列表、查看特定版本、回滚版本的 API。
+5. [✅]**测试脚本**：实现测试脚本。
+
+#### **第1步：修改 `src/app/models.py`**
+
+添加 `PromptVersion` 模型，并在 Prompt 中建立关系。
+
+```python
+# src/app/models.py
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table, JSON, UniqueConstraint
+from sqlalchemy.orm import relationship
+from sqlalchemy.ext.declarative import declarative_base
+from datetime import datetime
+
+Base = declarative_base()
+
+# ... (prompt_tag_association, Rating, Tag, User 类保持不变) ...
+# 请保留原有的 prompt_tag_association, Rating, Tag, User 代码
+
+# Prompt 和 Tag 的多对多关联表
+prompt_tag_association = Table('prompt_tag_association', Base.metadata,
+    Column('prompt_id', Integer, ForeignKey('prompts.id'), primary_key=True),
+    Column('tag_id', Integer, ForeignKey('tags.id'), primary_key=True)
+)
+
+# 评分模型
+class Rating(Base):
+    __tablename__ = "ratings"
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    score = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint('user_id', 'prompt_id', name='_user_prompt_uc'),)
+    prompt = relationship("Prompt", back_populates="ratings")
+    user = relationship("User")
+    def __repr__(self):
+        return f"<Rating(id={self.id}, prompt_id={self.prompt_id}, score={self.score})>"
+
+class Tag(Base):
+    __tablename__ = "tags"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(50), unique=True, index=True, nullable=False)
+    prompts = relationship("Prompt", secondary=prompt_tag_association, back_populates="tags")
+    def __repr__(self):
+        return f"<Tag(id={self.id}, name='{self.name}')>"
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    prompts = relationship("Prompt", back_populates="owner")
+    def __repr__(self):
+        return f"<User(id={self.id}, username='{self.username}')>"
+
+# --- 新增：Prompt 版本模型 ---
+class PromptVersion(Base):
+    """
+    存储 Prompt 的历史版本快照
+    """
+    __tablename__ = "prompt_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    version_number = Column(Integer, nullable=False) # 版本号，如 1, 2, 3...
+    
+    # 快照数据
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)
+    category = Column(String(100), nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    # (可选) 可以添加 commit_message 字段
+
+    prompt = relationship("Prompt", back_populates="versions")
+
+    def __repr__(self):
+        return f"<PromptVersion(prompt_id={self.prompt_id}, v={self.version_number})>"
+
+
+class Prompt(Base):
+    """
+    Prompt 数据模型
+    """
+    __tablename__ = "prompts"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    title = Column(String(200), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    category = Column(String(100), nullable=True, index=True)
+    usage_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    owner = relationship("User", back_populates="prompts")
+    tags = relationship("Tag", secondary=prompt_tag_association, back_populates="prompts")
+    executions = relationship("PromptExecution", back_populates="prompt", cascade="all, delete-orphan")
+    ratings = relationship("Rating", back_populates="prompt", cascade="all, delete-orphan")
+    
+    # --- 新增：与版本历史的关系 ---
+    versions = relationship("PromptVersion", back_populates="prompt", cascade="all, delete-orphan", order_by="desc(PromptVersion.version_number)")
+
+    def __repr__(self):
+        return f"<Prompt(id={self.id}, title='{self.title}')>"
+
+# ... (PromptExecution 类保持不变) ...
+class PromptExecution(Base):
+    __tablename__ = "prompt_executions"
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    request_data = Column(JSON, nullable=True)
+    response_text = Column(Text, nullable=True)
+    token_usage = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    prompt = relationship("Prompt", back_populates="executions")
+    user = relationship("User")
+    def __repr__(self):
+        return f"<PromptExecution(id={self.id}, prompt_id={self.prompt_id})>"
+```
+
+#### **第2步：修改 `src/app/schemas.py`**
+
+添加 `PromptVersionResponse`
+
+```python
+# src/app/schemas.py
+from pydantic import BaseModel, Field, Json
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+
+# ... (Tag, User Schemas 保持不变) ...
+# ... (PromptBase, Create, Update 保持不变) ...
+# ... (Rating Schemas 保持不变) ...
+# ... (PromptResponse 保持不变) ...
+
+# --- 新增：版本历史响应 ---
+class PromptVersionResponse(BaseModel):
+    id: int
+    prompt_id: int
+    version_number: int
+    title: str
+    content: str
+    category: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+# ... (PromptExecution Schemas 保持不变) ...
+```
+
+#### **第3步：修改 `src/app/crud.py`**
+
+这是核心修改。需要重写 `create_prompt` 和 `update_prompt`，并添加版本查询和回滚功能。
+
+```python
+# src/app/crud.py
+# ... (辅助函数和 User, Tag, Rating CRUD 保持不变) ...
+# ==================== Prompt CRUD (Updated for Versioning) ====================
+
+def create_prompt(db: Session, prompt: schemas.PromptCreate, user_id: int):
+    """创建 Prompt，并自动创建版本 1"""
+    # 1. 创建主 Prompt 记录
+    db_prompt = models.Prompt(**prompt.model_dump(), user_id=user_id)
+    db.add(db_prompt)
+    db.commit()
+    db.refresh(db_prompt)
+
+    # 2. 创建版本 1 快照
+    version = models.PromptVersion(
+        prompt_id=db_prompt.id,
+        version_number=1,
+        title=db_prompt.title,
+        content=db_prompt.content,
+        category=db_prompt.category
+    )
+    db.add(version)
+    db.commit()
+    
+    return db_prompt
+
+def update_prompt(db: Session, db_prompt: models.Prompt, prompt_update: schemas.PromptUpdate):
+    """更新 Prompt，并自动创建新版本"""
+    
+    # 1. 更新主表数据
+    update_data = prompt_update.model_dump(exclude_unset=True)
+    # 如果没有实际数据更新，直接返回
+    if not update_data:
+        return db_prompt
+
+    for field, value in update_data.items():
+        setattr(db_prompt, field, value)
+
+    # 2. 计算下一个版本号
+    # 查询当前最大的版本号
+    last_version = db.query(func.max(models.PromptVersion.version_number))\
+                     .filter(models.PromptVersion.prompt_id == db_prompt.id)\
+                     .scalar()
+    new_version_number = (last_version or 0) + 1
+
+    # 3. 创建新版本快照
+    new_version = models.PromptVersion(
+        prompt_id=db_prompt.id,
+        version_number=new_version_number,
+        title=db_prompt.title,
+        content=db_prompt.content,
+        category=db_prompt.category
+    )
+    
+    db.add(db_prompt)
+    db.add(new_version)
+    db.commit()
+    db.refresh(db_prompt)
+    return db_prompt
+
+def get_prompt_versions(db: Session, prompt_id: int):
+    """获取 Prompt 的所有版本"""
+    return db.query(models.PromptVersion)\
+             .filter(models.PromptVersion.prompt_id == prompt_id)\
+             .order_by(desc(models.PromptVersion.version_number))\
+             .all()
+
+def get_prompt_version(db: Session, prompt_id: int, version_number: int):
+    """获取特定版本"""
+    return db.query(models.PromptVersion)\
+             .filter(models.PromptVersion.prompt_id == prompt_id, 
+                     models.PromptVersion.version_number == version_number)\
+             .first()
+
+def rollback_prompt(db: Session, db_prompt: models.Prompt, version_number: int):
+    """
+    回滚到指定版本。
+    策略：不是删除历史，而是将指定版本的内容复制出来，作为最新的更新（生成新版本）。
+    这样保证了历史的线性向前，不会丢失“回滚”这一操作记录。
+    """
+    target_version = get_prompt_version(db, db_prompt.id, version_number)
+    if not target_version:
+        return None
+
+    # 构造更新数据，覆盖当前 Prompt
+    prompt_update = schemas.PromptUpdate(
+        title=target_version.title,
+        content=target_version.content,
+        category=target_version.category
+    )
+    
+    # 复用 update_prompt 逻辑，它会自动处理“创建新版本”的逻辑
+    return update_prompt(db, db_prompt, prompt_update)
+
+# ... (get_prompts, get_prompts_by_user 等其他 Prompt CRUD 保持不变) ...
+# ... (PromptExecution CRUD 保持不变) ...
+```
+
+#### **第4步：修改 `src/app/main.py`**
+
+添加版本相关的 API 端点。
+
+```python
+# src/app/main.py
+from fastapi import FastAPI, Depends, HTTPException, Query, Header, Response, status
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+from typing import Annotated, Optional, List
+from . import models, crud, schemas
+from .database import lifespan, get_db
+from .llm_client import execute_prompt
+from .schemas import (
+    PromptCreate, PromptUpdate, PromptResponse, PromptList,
+    UserResponse, UserCreate, PromptExecuteRequest, PromptExecutionResponse,
+    RatingCreate, RatingResponse, PromptVersionResponse # 导入新 Schema
+)
+
+# ... (App 初始化, DB Session, User Dependency 保持不变) ...
+app = FastAPI(
+    title="LLM Prompt Management System",
+    description="一个用于管理 LLM 提示词的 API 系统",
+    version="0.3.0",
+    lifespan=lifespan
+)
+DBSession = Annotated[Session, Depends(get_db)]
+async def get_current_user(x_user_id: Annotated[int, Header()], db: DBSession):
+    user = db.query(models.User).filter(models.User.id == x_user_id).first()
+    if not user: raise HTTPException(status_code=401, detail="Invalid user ID")
+    return user
+CurrentUser = Annotated[models.User, Depends(get_current_user)]
+
+# ... (Health Checks 保持不变) ...
+# ... (Rating, Tag, Execution API 端点保持不变) ...
+# ==================== Versioning Endpoints (New) ====================
+
+@app.get("/prompts/{prompt_id}/versions", response_model=List[PromptVersionResponse], summary="查看所有版本")
+async def list_prompt_versions_endpoint(prompt_id: int, db: DBSession, current_user: CurrentUser):
+    """获取指定 Prompt 的所有历史版本快照"""
+    db_prompt = crud.get_prompt(db, prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    return crud.get_prompt_versions(db, prompt_id)
+
+@app.get("/prompts/{prompt_id}/versions/{version_number}", response_model=PromptVersionResponse, summary="查看特定版本")
+async def get_prompt_version_endpoint(prompt_id: int, version_number: int, db: DBSession, current_user: CurrentUser):
+    """获取指定 Prompt 的特定版本详情"""
+    version = crud.get_prompt_version(db, prompt_id, version_number)
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+    return version
+
+@app.post("/prompts/{prompt_id}/rollback/{version_number}", response_model=PromptResponse, summary="回滚到指定版本")
+async def rollback_prompt_endpoint(prompt_id: int, version_number: int, db: DBSession, current_user: CurrentUser):
+    """
+    将 Prompt 回滚到指定版本。
+    注意：这不会删除历史，而是会基于目标版本的内容创建一个**最新**的版本。
+    只有所有者可以执行此操作。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    if db_prompt.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to rollback this prompt")
+        
+    updated_prompt = crud.rollback_prompt(db, db_prompt, version_number)
+    if not updated_prompt:
+        raise HTTPException(status_code=404, detail="Target version not found")
+        
+    return updated_prompt
+
+# ... (Prompt CRUD 端点保持不变) ...
+```
+
+#### **第5步：编写模拟测试用例 (`test_ratings.py`)和提交**
+
+运行这个测试之前，请务必确保你已经通过 `docker compose down -v` 和 `docker compose up --build` 重置并启动了一个全新的、干净的环境。
+
+在 `tests/` 目录下创建一个新文件 `test_versions.py`，并将以下代码粘贴进去。
+
+```python
+# tests/test_versions.py
+
+import httpx
+import pytest
+
+BASE_URL = "http://localhost:8002"
+test_state = {}
+
+# === 辅助函数 ===
+def create_user(username, password):
+    with httpx.Client() as client:
+        res = client.post(f"{BASE_URL}/users", json={"username": username, "password": password})
+        # 如果用户已存在，忽略错误（为了方便重复运行测试调试）
+        if res.status_code == 400:
+            # 尝试登录或获取现有用户ID的逻辑在这里省略，直接假设测试环境是干净的
+            pass 
+        return res.json()
+
+# === 测试设置 ===
+@pytest.fixture(scope="module", autouse=True)
+def setup_for_version_tests():
+    print("\n--- Setting up data for versioning tests ---")
+    # 创建一个用户 Kevin
+    user = create_user("kevin_v", "password123")
+    test_state["user_id"] = user["id"]
+    print("--- Versioning tests setup complete ---")
+
+# === 测试用例 ===
+
+def test_1_create_prompt_creates_v1():
+    """测试：创建 Prompt 时，应该自动创建版本 1"""
+    user_id = test_state["user_id"]
+    headers = {"X-User-ID": str(user_id)}
+    
+    payload = {
+        "title": "Original Idea",
+        "content": "This is version 1 content.",
+        "category": "Idea"
+    }
+    
+    with httpx.Client() as client:
+        # 1. 创建 Prompt
+        res = client.post(f"{BASE_URL}/prompts", json=payload, headers=headers)
+        assert res.status_code == 201
+        data = res.json()
+        prompt_id = data["id"]
+        test_state["prompt_id"] = prompt_id
+        
+        # 2. 检查版本历史
+        ver_res = client.get(f"{BASE_URL}/prompts/{prompt_id}/versions", headers=headers)
+        assert ver_res.status_code == 200
+        versions = ver_res.json()
+        
+        # 断言：应该只有 1 个版本，且版本号为 1
+        assert len(versions) == 1
+        assert versions[0]["version_number"] == 1
+        assert versions[0]["title"] == "Original Idea"
+        assert versions[0]["content"] == "This is version 1 content."
+        
+    print("\n✅ Initial prompt creation correctly generated Version 1")
+
+@pytest.mark.depends(on=["test_1_create_prompt_creates_v1"])
+def test_2_update_prompt_creates_v2():
+    """测试：更新 Prompt 时，应该自动创建版本 2"""
+    user_id = test_state["user_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(user_id)}
+    
+    update_payload = {
+        "title": "Improved Idea",
+        "content": "This is version 2 content (better)."
+    }
+    
+    with httpx.Client() as client:
+        # 1. 更新 Prompt
+        res = client.put(f"{BASE_URL}/prompts/{prompt_id}", json=update_payload, headers=headers)
+        assert res.status_code == 200
+        
+        # 2. 检查 Prompt 当前状态
+        current_prompt = res.json()
+        assert current_prompt["title"] == "Improved Idea"
+        
+        # 3. 检查版本历史
+        ver_res = client.get(f"{BASE_URL}/prompts/{prompt_id}/versions", headers=headers)
+        versions = ver_res.json()
+        
+        # 断言：现在应该有 2 个版本
+        assert len(versions) == 2
+        # 列表默认按版本倒序排列（最新的在最前）
+        assert versions[0]["version_number"] == 2
+        assert versions[0]["title"] == "Improved Idea"
+        
+        assert versions[1]["version_number"] == 1
+        assert versions[1]["title"] == "Original Idea"
+
+    print("\n✅ Updating prompt correctly generated Version 2")
+
+@pytest.mark.depends(on=["test_2_update_prompt_creates_v2"])
+def test_3_get_specific_version():
+    """测试：获取特定版本的详情"""
+    user_id = test_state["user_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(user_id)}
+    
+    with httpx.Client() as client:
+        # 获取版本 1
+        res = client.get(f"{BASE_URL}/prompts/{prompt_id}/versions/1", headers=headers)
+        assert res.status_code == 200
+        v1 = res.json()
+        assert v1["version_number"] == 1
+        assert v1["content"] == "This is version 1 content."
+
+    print("\n✅ Successfully retrieved specific version details")
+
+@pytest.mark.depends(on=["test_2_update_prompt_creates_v2"])
+def test_4_rollback_to_v1():
+    """测试：回滚到版本 1"""
+    user_id = test_state["user_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(user_id)}
+    
+    # 我们要回滚到版本 1 ("Original Idea")
+    target_version = 1
+    
+    with httpx.Client() as client:
+        # 1. 执行回滚
+        # 注意：回滚逻辑本质上是一次更新，所以它会生成版本 3，内容与版本 1 相同
+        res = client.post(f"{BASE_URL}/prompts/{prompt_id}/rollback/{target_version}", headers=headers)
+        assert res.status_code == 200
+        rolled_back_prompt = res.json()
+        
+        # 2. 验证当前 Prompt 内容是否变回了 v1 的内容
+        assert rolled_back_prompt["title"] == "Original Idea"
+        assert rolled_back_prompt["content"] == "This is version 1 content."
+        
+        # 3. 验证版本历史
+        ver_res = client.get(f"{BASE_URL}/prompts/{prompt_id}/versions", headers=headers)
+        versions = ver_res.json()
+        
+        # 断言：现在应该有 3 个版本
+        # v3 (rollback to v1), v2 (improved), v1 (original)
+        assert len(versions) == 3
+        assert versions[0]["version_number"] == 3
+        assert versions[0]["title"] == "Original Idea" # v3 的内容等于 v1
+        
+    print("\n✅ Successfully rolled back to Version 1 (created Version 3)")
+```
+
+1. **重启并清空数据库**
+    由于你再次修改了数据库模型，必须执行此步骤！
+
+    ```bash
+    # 在第一个终端
+    docker compose down -v
+    docker compose up --build
+    ```
+
+2. **运行所有测试**
+    打开第二个终端，运行测试脚本。
+
+    ```bash
+    ./test.sh tests/test_versions.py
+    ```
+
+    ```bash
+    $ ./test.sh tests/test_versions.py
+    --- 🚀 Starting API tests against running Docker container ---
+    --- Target URL: http://localhost:8002 ---
+
+    ================================================================= test session starts =================================================================
+    platform win32 -- Python 3.11.5, pytest-7.4.0, pluggy-1.0.0 -- D:\Anaconda\python.exe
+    cachedir: .pytest_cache
+    rootdir: D:\code\agent-v1\LLM-X\LLM-X-Season2\Lesson1\prompt-management-system
+    configfile: pytest.ini
+    plugins: anyio-4.11.0, depends-1.0.1
+    collected 4 items                                                                                                                                       
+
+    tests/test_versions.py::test_1_create_prompt_creates_v1
+    --- Setting up data for versioning tests ---
+    --- Versioning tests setup complete ---
+
+    ✅ Initial prompt creation correctly generated Version 1
+    PASSED
+    tests/test_versions.py::test_2_update_prompt_creates_v2 
+    ✅ Updating prompt correctly generated Version 2
+    PASSED
+    tests/test_versions.py::test_3_get_specific_version 
+    ✅ Successfully retrieved specific version details
+    PASSED
+    tests/test_versions.py::test_4_rollback_to_v1 
+    ✅ Successfully rolled back to Version 1 (created Version 3)
+    PASSED
+
+    ================================================================== 4 passed in 7.65s ==================================================================
+
+    --- ✅ All tests passed successfully! ---
+    ```
+
+3. **提交成果**
+    完成
+
+    ```bash
+    git status
+    git add .
+    git commit -m "feat(versions): implement prompt version control with auto-snapshot and rollback"
     ```

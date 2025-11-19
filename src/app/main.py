@@ -9,8 +9,11 @@ from . import models
 from .database import lifespan, get_db
 from . import models, crud, schemas
 from .llm_client import execute_prompt
-from .schemas import (PromptCreate, PromptUpdate, PromptResponse, PromptList,UserResponse, UserCreate,
-                      PromptExecuteRequest, PromptExecutionResponse, RatingCreate, RatingResponse)
+from .schemas import (
+    PromptCreate, PromptUpdate, PromptResponse, PromptList,
+    UserResponse, UserCreate, PromptExecuteRequest, PromptExecutionResponse,
+    RatingCreate, RatingResponse, PromptVersionResponse
+)
 from .config import settings
 
 # 确保在 FastAPI 启动前，数据库表已经通过 Base.metadata 注册
@@ -19,7 +22,7 @@ from .config import settings
 app = FastAPI(
     title="LLM Prompt Management System",
     description="一个用于管理 LLM 提示词的 API 系统",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan
 )
 
@@ -250,6 +253,44 @@ async def remove_tag_from_prompt_endpoint(
         raise HTTPException(status_code=404, detail="Tag not found")
         
     return crud.remove_tag_from_prompt(db=db, db_prompt=db_prompt, db_tag=db_tag)
+
+# ==================== Versioning Endpoints (New) ====================
+
+@app.get("/prompts/{prompt_id}/versions", response_model=List[PromptVersionResponse], summary="查看所有版本")
+async def list_prompt_versions_endpoint(prompt_id: int, db: DBSession, current_user: CurrentUser):
+    """获取指定 Prompt 的所有历史版本快照"""
+    db_prompt = crud.get_prompt(db, prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    return crud.get_prompt_versions(db, prompt_id)
+
+@app.get("/prompts/{prompt_id}/versions/{version_number}", response_model=PromptVersionResponse, summary="查看特定版本")
+async def get_prompt_version_endpoint(prompt_id: int, version_number: int, db: DBSession, current_user: CurrentUser):
+    """获取指定 Prompt 的特定版本详情"""
+    version = crud.get_prompt_version(db, prompt_id, version_number)
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+    return version
+
+@app.post("/prompts/{prompt_id}/rollback/{version_number}", response_model=PromptResponse, summary="回滚到指定版本")
+async def rollback_prompt_endpoint(prompt_id: int, version_number: int, db: DBSession, current_user: CurrentUser):
+    """
+    将 Prompt 回滚到指定版本。
+    注意：这不会删除历史，而是会基于目标版本的内容创建一个**最新**的版本。
+    只有所有者可以执行此操作。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    if db_prompt.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to rollback this prompt")
+        
+    updated_prompt = crud.rollback_prompt(db, db_prompt, version_number)
+    if not updated_prompt:
+        raise HTTPException(status_code=404, detail="Target version not found")
+        
+    return updated_prompt
 
 # ==================== 提示词 CRUD 端点 ====================
 

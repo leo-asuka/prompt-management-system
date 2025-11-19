@@ -85,11 +85,23 @@ class PromptResponse(PromptBase):
         # 这样就可以直接把 SQLAlchemy 的 Prompt 对象传给 PromptResponse 来创建响应。
         from_attributes = True  # 允许从 ORM 模型创建
 
-
 class PromptList(BaseModel):
     """提示词列表响应"""
     total: int
     prompts: list[PromptResponse]
+
+# 版本历史响应
+class PromptVersionResponse(BaseModel):
+    id: int
+    prompt_id: int
+    version_number: int
+    title: str
+    content: str
+    category: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 # Prompt 执行相关的 Schemas
 

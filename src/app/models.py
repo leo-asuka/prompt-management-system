@@ -12,6 +12,30 @@ prompt_tag_association = Table('prompt_tag_association', Base.metadata,
     Column('tag_id', Integer, ForeignKey('tags.id'), primary_key=True)
 )
 
+# Prompt 版本模型
+class PromptVersion(Base):
+    """
+    存储 Prompt 的历史版本快照
+    """
+    __tablename__ = "prompt_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    version_number = Column(Integer, nullable=False) # 版本号，如 1, 2, 3...
+    
+    # 快照数据
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)
+    category = Column(String(100), nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    # (可选) 可以添加 commit_message 字段
+
+    prompt = relationship("Prompt", back_populates="versions")
+
+    def __repr__(self):
+        return f"<PromptVersion(prompt_id={self.prompt_id}, v={self.version_number})>"
+
 # 评分模型
 class Rating(Base):
     __tablename__ = "ratings"
@@ -113,6 +137,8 @@ class Prompt(Base):
     executions = relationship("PromptExecution", back_populates="prompt", cascade="all, delete-orphan")
 
     ratings = relationship("Rating", back_populates="prompt", cascade="all, delete-orphan")
+    
+    versions = relationship("PromptVersion", back_populates="prompt", cascade="all, delete-orphan", order_by="desc(PromptVersion.version_number)")
     def __repr__(self):
         return f"<Prompt(id={self.id}, title='{self.title}', category='{self.category}')>"
     
