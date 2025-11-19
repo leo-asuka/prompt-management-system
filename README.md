@@ -17,17 +17,17 @@ LLM-X 课程第二季-第一节课
 
 ## 📡 API 端点
 
-| 方法 | 端点 | 功能 |
-|------|------|------|
-| GET | `/` | 欢迎页面 |
-| GET | `/health` | API 健康检查 |
-| GET | `/db_health` | 数据库连接检查 |
-| POST | `/prompts` | 创建新提示词 |
-| GET | `/prompts` | 列出所有提示词 |
-| GET | `/prompts/{id}` | 获取特定提示词 |
-| PUT | `/prompts/{id}` | 更新提示词 |
-| DELETE | `/prompts/{id}` | 删除提示词 |
-| GET | `/prompts/search?keyword=xxx` | 搜索提示词 |
+| 方法   | 端点                          | 功能           |
+| ------ | ----------------------------- | -------------- |
+| GET    | `/`                           | 欢迎页面       |
+| GET    | `/health`                     | API 健康检查   |
+| GET    | `/db_health`                  | 数据库连接检查 |
+| POST   | `/prompts`                    | 创建新提示词   |
+| GET    | `/prompts`                    | 列出所有提示词 |
+| GET    | `/prompts/{id}`               | 获取特定提示词 |
+| PUT    | `/prompts/{id}`               | 更新提示词     |
+| DELETE | `/prompts/{id}`               | 删除提示词     |
+| GET    | `/prompts/search?keyword=xxx` | 搜索提示词     |
 
 ## 🚀 快速开始
 
@@ -72,19 +72,24 @@ docker compose up --build
 **项目目录结构：**
 
 ```
-/ai_eng_week_1_demo
-├── .dockerignore         # 告诉Docker在构建时忽略哪些文件
-├── .env                  # 存放密钥 (!!! 绝不能提交到Git)
-├── docker-compose.yml    # Docker编排文件 (API + DB)
-├── Dockerfile            # API服务的Dockerfile
-├── pyproject.toml        # PDM项目和依赖管理
-├── pdm.lock              # 锁定的依赖版本 (由PDM生成)
-├── README.md             # 项目说明文档
-└── src/
-    └── main/
-        ├── __init__.py   # 使'main'成为一个Python包
-        ├── app.py        # FastAPI应用主文件
-        └── config.py     # Pydantic配置管理
+prompt-management-system/
+├── src/app/
+│       ├── __init__.py
+│       ├── config.py     # 使用 Pydantic 管理环境变量
+│       ├── crud.py       # 数据库操作
+│       ├── database.py   # 数据库连接
+│       ├── main.py       # FastAPI 应用入口
+│       ├── models.py     # 数据模型
+│       └── schemas.py    # Pydantic Schemas
+├── tests/
+│   └── test_prompts.py   # 基础测试
+├── .dockerignore         # 应用容器配置
+├── .env.example          # 环境变量模板
+├── .gitignore            # Git 忽略文件
+├── docker-compose.yml    # 服务编排
+├── Dockerfile            # 应用容器配置
+├── pyproject.toml        # 依赖
+└── README.md             # 项目说明
 ```
 
 -----

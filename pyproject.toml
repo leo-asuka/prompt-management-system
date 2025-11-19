@@ -16,12 +16,14 @@ requires-python = ">=3.11"
 readme = "README.md"
 license = {text = "MIT"}
 
-[tool.pdm.dev-dependencies]
-dev = [
-    "pytest>=8.2.2",
-]
-
 [tool.pdm.scripts]
 # 脚本别名，方便本地开发
 # dev = "uvicorn src.main.app:app --reload --host 0.0.0.0 --port 8000"
 dev = "uvicorn src.app.main:app --reload --host 0.0.0.0 --port 8000"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.1",
+    "httpx>=0.28.1",
+    "pytest-depends>=1.0.1",
+]

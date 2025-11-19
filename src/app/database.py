@@ -2,6 +2,7 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import OperationalError
+from fastapi import Request
 from contextlib import asynccontextmanager
 import time
 
@@ -66,13 +67,10 @@ async def lifespan(app):
 
 
 # 依赖项：获取数据库Session
-def get_db(app):
-    """一个 FastAPI 依赖项，它为每个请求提供一个数据库会话。"""
-    db = app.state.SessionLocal()
+def get_db(request: Request):
+    """FastAPI 依赖项：每个请求通过 request 获取当前 app 的 SessionLocal。"""
+    db = request.app.state.SessionLocal()
     try:
-        # yield 关键字在这里的作用是：将 db 对象提供给 API 路径操作函数
-        # 请求处理完毕后，代码会回到这里继续执行 finally 块
         yield db
     finally:
-        # 无论请求处理是否成功，都关闭会话，释放资源
         db.close()

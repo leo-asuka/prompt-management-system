@@ -21,7 +21,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-DBSession = Annotated[Session, Depends(lambda: get_db(app))]
+DBSession = Annotated[Session, Depends(get_db)]
 
 # ==================== 健康检查端点 ====================
 
