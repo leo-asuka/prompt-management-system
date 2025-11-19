@@ -128,5 +128,14 @@ async def delete_prompt_endpoint(prompt_id: int, db: DBSession):
 
     - **prompt_id**: 提示词ID
     """
+    # 首先调用 CRUD 函数执行删除操作
+    # 【优化】可以检查一下返回值，如果 prompt 不存在，可以返回 404
+    db_prompt = crud.get_prompt(db, prompt_id)
+    if db_prompt is None:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+
     crud.delete_prompt(db, prompt_id)
-    return JSONResponse(status_code=204)
+    
+    # 【修复】对于 204 No Content，我们应该返回 None。
+    # FastAPI 会自动处理，生成一个没有 body 的正确 HTTP 响应。
+    return None
