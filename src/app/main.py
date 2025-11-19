@@ -9,7 +9,8 @@ from . import models
 from .database import lifespan, get_db
 from . import models, crud, schemas
 from .llm_client import execute_prompt
-from .schemas import PromptCreate, PromptUpdate, PromptResponse, PromptList, UserResponse, UserCreate, PromptExecuteRequest, PromptExecutionResponse
+from .schemas import (PromptCreate, PromptUpdate, PromptResponse, PromptList,UserResponse, UserCreate,
+                      PromptExecuteRequest, PromptExecutionResponse, RatingCreate, RatingResponse)
 from .config import settings
 
 # 确保在 FastAPI 启动前，数据库表已经通过 Base.metadata 注册
@@ -76,7 +77,49 @@ async def db_health_check(db: DBSession):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
 
-# ==================== Prompt Execution Endpoints (New) ====================
+@app.post("/prompts/{prompt_id}/ratings", response_model=RatingResponse, status_code=201, summary="为一个 Prompt 评分")
+async def rate_prompt_endpoint(
+    prompt_id: int,
+    rating: RatingCreate,
+    db: DBSession,
+    current_user: CurrentUser
+):
+    """
+    为一个 Prompt 提交评分。
+    - 一个用户只能对同一个 Prompt 评分一次。
+    - 分数必须在 1 到 5 之间。
+    - 需要用户认证。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    # 防止用户给自己创建的 Prompt 评分
+    if db_prompt.user_id == current_user.id:
+        raise HTTPException(status_code=403, detail="You cannot rate your own prompt")
+
+    db_rating = crud.create_rating_for_prompt(
+        db, prompt_id=prompt_id, user_id=current_user.id, score=rating.score
+    )
+    
+    if db_rating is None:
+        # 409 Conflict 状态码表示请求与服务器当前状态冲突（这里指重复评分）
+        raise HTTPException(status_code=409, detail="You have already rated this prompt")
+        
+    return db_rating
+
+@app.get("/prompts/{prompt_id}/ratings", response_model=List[RatingResponse], summary="获取一个 Prompt 的所有评分")
+async def get_prompt_ratings_endpoint(prompt_id: int, db: DBSession):
+    """
+    获取指定 Prompt 的所有评分记录。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    return crud.get_ratings_for_prompt(db, prompt_id=prompt_id)
+
+# ==================== Prompt Execution Endpoints ====================
 
 @app.post("/prompts/{prompt_id}/execute", response_model=PromptExecutionResponse, summary="执行提示词")
 async def execute_prompt_endpoint(
@@ -229,7 +272,8 @@ async def list_prompts_endpoint(
     db: DBSession,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=200),
-    tags: Optional[str] = Query(None, description="用逗号分隔的标签名, e.g., 'marketing,sales'")
+    tags: Optional[str] = Query(None, description="用逗号分隔的标签名, e.g., 'marketing,sales'"),
+    sort: Optional[str] = Query(None, description="排序字段。使用 'rating' 按平均分排序。")
 ):
     """
     获取所有提示词列表（支持分页）
@@ -238,7 +282,7 @@ async def list_prompts_endpoint(
     - **limit**: 返回的最大记录数（默认100，最大100）
     """
     tag_list = tags.split(',') if tags else None
-    prompts, total = crud.get_prompts(db, skip=skip, limit=limit, tags=tag_list)
+    prompts, total = crud.get_prompts(db, skip=skip, limit=limit, tags=tag_list, sort=sort)
     return {"total": total, "prompts": prompts}
 
 @app.get("/prompts/{prompt_id}", response_model=PromptResponse, summary="获取特定提示词")
@@ -248,7 +292,7 @@ async def get_prompt_endpoint(prompt_id: int, db: DBSession):
 
     - **prompt_id**: 提示词ID
     """
-    prompt = crud.get_prompt(db, prompt_id)
+    prompt = crud.get_prompt_with_average_rating(db, prompt_id)
     if not prompt:
         # 如果 CRUD 函数返回 None，说明记录不存在，抛出 404 异常。
         raise HTTPException(status_code=404, detail="Prompt not found")

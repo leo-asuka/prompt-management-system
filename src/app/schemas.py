@@ -52,6 +52,19 @@ class PromptUpdate(BaseModel):
     content: Optional[str] = Field(None, min_length=1, description="新的 Prompt 内容")
     category: Optional[str] = Field(None, max_length=50, description="新的 Prompt 分类")
 
+# 评分相关的 Schemas
+class RatingCreate(BaseModel):
+    score: int = Field(..., ge=1, le=5, description="评分分数，必须在1到5之间")
+
+class RatingResponse(BaseModel):
+    id: int
+    prompt_id: int
+    user_id: int
+    score: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 # 在返回 Prompt 信息时，也一并返回创建者的基本信息
 class PromptResponse(PromptBase):
@@ -61,8 +74,10 @@ class PromptResponse(PromptBase):
     created_at: datetime
     updated_at: datetime
     owner: UserResponse  # 嵌套 UserResponse Schema
-    # --- 新增：在返回 Prompt 时，包含其所有标签 ---
+    # 在返回 Prompt 时，包含其所有标签
     tags: List[TagResponse] = []
+
+    average_rating: Optional[float] = Field(None, description="该 Prompt 的平均评分")
 
     # Pydantic V2 的配置项
     class Config:
@@ -103,3 +118,4 @@ class PromptExecutionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+

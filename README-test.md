@@ -1135,7 +1135,7 @@ def test_8_alice_can_delete_her_own_prompt():
     git commit -m "feat(auth): implement user system and ownership-based authorization"
     ```
 
-### 2.目标：实现用户与权限系统
+### 2.目标：标签系统
 
 **核心任务分解：**
 
@@ -1714,7 +1714,7 @@ def test_7_remove_tag_from_prompt():
     git commit -m "feat(tags): implement tag system with many-to-many relationship"
     ```
 
-### 3.目标：实现用户与权限系统
+### 3.目标：LLM API 集成
 
 **核心任务分解：**
 
@@ -1866,10 +1866,13 @@ def test_7_remove_tag_from_prompt():
         user_id: int
         request_data: Optional[Dict[str, Any]] = None
         response_text: Optional[str] = None
-        token_usage: Optional[Dict[str, int]] = None
+
+        # 修改这一行
+        # 从: token_usage: Optional[Dict[str, int]] = None
+        token_usage: Optional[Dict[str, Any]] = None # 或者 Optional[dict]
         error_message: Optional[str] = None
         created_at: datetime
-    
+
         class Config:
             from_attributes = True
 
@@ -1885,14 +1888,21 @@ def test_7_remove_tag_from_prompt():
 # src/app/llm_client.py
 
 from openai import OpenAI, APITimeoutError, APIConnectionError, RateLimitError
-from jinja2 import Template # 使用 Jinja2 来做模板替换，比 str.format 更安全、更强大
+from jinja2 import Template # 使用 Jinja2 来做模板替换
 from .config import settings
 
 # 1. 初始化 OpenAI 客户端
 # 客户端在模块加载时被实例化一次，这是一种高效的单例模式
 try:
+    # client = OpenAI(
+    #     api_key=settings.OPENAI_API_KEY,
+    #     timeout=20.0,  # 设置默认超时时间
+    # )
     client = OpenAI(
+        # defaults to os.environ.get("OPENAI_API_KEY")
         api_key=settings.OPENAI_API_KEY,
+        base_url="https://api.chatanywhere.tech/v1",
+        # base_url="https://api.chatanywhere.org/v1"
         timeout=20.0,  # 设置默认超时时间
     )
 except Exception as e:
@@ -1925,6 +1935,7 @@ def execute_prompt(prompt_content: str, variables: dict) -> LLMExecutionResult:
         template = Template(prompt_content)
         final_prompt = template.render(variables)
     except Exception as e:
+        print(f"--- [LLM Client Error] An unexpected error occurred: {e} ---")
         return LLMExecutionResult(success=False, error=f"Template rendering failed: {e}")
 
     # 3. 调用 OpenAI API 并处理潜在的错误
@@ -1945,14 +1956,18 @@ def execute_prompt(prompt_content: str, variables: dict) -> LLMExecutionResult:
         return LLMExecutionResult(success=True, content=content, usage=usage_dict)
 
     except APITimeoutError:
+        print("--- LLM CLIENT ERROR: Request timed out. ---")
         return LLMExecutionResult(success=False, error="OpenAI API request timed out.")
-    except APIConnectionError:
+    except APIConnectionError as e:
+        print(f"--- LLM CLIENT ERROR: Connection error: {e} ---")
         return LLMExecutionResult(success=False, error="Failed to connect to OpenAI API.")
     except RateLimitError:
+        print("--- LLM CLIENT ERROR: Rate limit exceeded. ---")
         return LLMExecutionResult(success=False, error="OpenAI API rate limit exceeded.")
     except Exception as e:
+        # --- 在这里添加详细的日志打印 ---
+        print(f"--- LLM CLIENT UNEXPECTED ERROR: {type(e).__name__}: {e} ---")
         return LLMExecutionResult(success=False, error=f"An unexpected error occurred: {e}")
-
 ```
 
 #### **第四步：更新 `crud.py`**
@@ -2106,15 +2121,21 @@ pythonpath = . src
 
 import httpx
 import pytest
-from src.app import llm_client # 直接导入模块以进行 mock
+import os
+from dotenv import load_dotenv
+
+# 加载 .env 文件中的环境变量，特别是 OPENAI_API_KEY
+load_dotenv()
+
+BASE_URL = "http://localhost:8002"
 
 # 共享状态
 test_state = {}
 
-# === 辅助函数，与 test_tags.py 中的类似 ===
+# === 辅助函数 ===
 def create_user_for_llm(username, password):
     with httpx.Client() as client:
-        response = client.post("http://localhost:8002/users", json={"username": username, "password": password})
+        response = client.post(f"{BASE_URL}/users", json={"username": username, "password": password})
         assert response.status_code == 201
         return response.json()
 
@@ -2122,7 +2143,7 @@ def create_prompt_for_llm(user_id, title, content):
     with httpx.Client() as client:
         headers = {"X-User-ID": str(user_id)}
         response = client.post(
-            "http://localhost:8002/prompts",
+            f"{BASE_URL}/prompts",
             json={"title": title, "content": content},
             headers=headers
         )
@@ -2132,119 +2153,98 @@ def create_prompt_for_llm(user_id, title, content):
 # === 测试设置 ===
 @pytest.fixture(scope="module", autouse=True)
 def setup_for_llm_tests():
-    print("\n--- Setting up data for LLM integration tests ---")
-    user_eva = create_user_for_llm("eva", "pass123")
-    test_state["user_eva_id"] = user_eva["id"]
+    print("\n--- Setting up data for REAL LLM integration tests ---")
+    user_frank = create_user_for_llm("frank_real", "pass_real_123")
+    test_state["user_frank_id"] = user_frank["id"]
     
-    prompt_template = "Generate a short marketing slogan for a product named {{product_name}}."
-    prompt = create_prompt_for_llm(user_eva["id"], "Slogan Generator", prompt_template)
+    prompt_template = "In one short sentence, what is the core concept of the theory of relativity? Answer in the persona of a pirate."
+    prompt = create_prompt_for_llm(user_frank["id"], "Pirate Scientist", prompt_template)
     test_state["prompt_id"] = prompt["id"]
-    print("--- LLM test setup complete ---")
+    print("--- REAL LLM test setup complete ---")
 
 
-# === 测试用例 ===
+# === 测试用例 (真实 API 调用) ===
 
-def test_1_successful_prompt_execution(monkeypatch):
+# 使用 pytest.mark.skipif 来有条件地跳过测试
+# 如果环境变量 OPENAI_API_KEY 不存在或为空，则跳过此测试
+@pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"),
+    reason="OPENAI_API_KEY is not set, skipping real API call test."
+)
+def test_1_real_successful_prompt_execution():
     """
-    测试成功的 Prompt 执行流程，通过 monkeypatch 模拟 LLM 客户端
+    测试成功的 Prompt 执行流程，通过真实的 OpenAI API 调用。
     """
-    # 1. 定义一个模拟函数，它将替换掉真实的 llm_client.execute_prompt
-    def mock_execute_prompt(prompt_content: str, variables: dict):
-        # 模拟成功的返回结果
-        mock_result = llm_client.LLMExecutionResult(
-            success=True,
-            content="Sparkle a new day with Sparkle.",
-            usage={"prompt_tokens": 15, "completion_tokens": 8, "total_tokens": 23}
-        )
-        return mock_result
-
-    # 2. 使用 monkeypatch 将真实函数替换为我们的模拟函数
-    monkeypatch.setattr(llm_client, "execute_prompt", mock_execute_prompt)
-
-    # 3. 正常调用 API 端点
-    user_id = test_state["user_eva_id"]
+    user_id = test_state["user_frank_id"]
     prompt_id = test_state["prompt_id"]
     headers = {"X-User-ID": str(user_id)}
-    payload = {"variables": {"product_name": "Sparkle"}}
+    # 这个 prompt 没有变量，所以 payload 是空的
+    payload = {"variables": {}}
 
-    with httpx.Client() as client:
-        response = client.post(f"http://localhost:8002/prompts/{prompt_id}/execute", json=payload, headers=headers)
+    # 使用 httpx.Client 并增加超时时间，因为真实 API 调用可能需要更长时间
+    with httpx.Client(timeout=30.0) as client:
+        response = client.post(f"{BASE_URL}/prompts/{prompt_id}/execute", json=payload, headers=headers)
     
-    # 4. 断言结果
-    assert response.status_code == 200
+    # --- 断言 ---
+    # 1. 检查 HTTP 状态码
+    assert response.status_code == 200, f"API call failed with status {response.status_code}: {response.text}"
+    
     data = response.json()
-    assert data["response_text"] == "Sparkle a new day with Sparkle."
-    assert data["token_usage"]["total_tokens"] == 23
-    assert data["error_message"] is None
+    
+    # 2. 对返回的数据结构进行断言
+    assert "id" in data
     assert data["prompt_id"] == prompt_id
     assert data["user_id"] == user_id
+    assert data["error_message"] is None
+    
+    # 3. 对 LLM 的返回内容进行灵活的断言
+    # 我们不能断言确切的文本，但可以检查它是否包含某些关键词
+    assert data["response_text"] is not None
+    assert len(data["response_text"]) > 5 # 响应不应为空
+    assert "arrr" in data["response_text"].lower() or "matey" in data["response_text"].lower() or "shiver" in data["response_text"].lower() # 检查是否符合 persona
+    print(f"\n✅ Real LLM call successful. Response: '{data['response_text']}'")
+
+    # 4. 验证 token usage
+    assert "token_usage" in data
+    assert data["token_usage"]["total_tokens"] > 0
+    assert data["token_usage"]["prompt_tokens"] > 0
+    assert data["token_usage"]["completion_tokens"] > 0
+    print(f"✅ Token usage recorded: {data['token_usage']}")
+
     test_state["execution_id"] = data["id"]
-    
-    print("\n✅ Successful prompt execution (mocked) test passed")
 
-def test_2_failed_prompt_execution(monkeypatch):
+@pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"),
+    reason="OPENAI_API_KEY is not set, skipping real API call test."
+)
+@pytest.mark.depends(on=["test_1_real_successful_prompt_execution"])
+def test_2_list_real_execution_history():
     """
-    测试失败的 Prompt 执行流程 (例如 API 超时)
+    测试获取包含真实调用的执行历史记录。
     """
-    # 1. 定义一个模拟失败场景的函数
-    def mock_failed_execute(prompt_content: str, variables: dict):
-        return llm_client.LLMExecutionResult(success=False, error="OpenAI API request timed out.")
-
-    # 2. 替换真实函数
-    monkeypatch.setattr(llm_client, "execute_prompt", mock_failed_execute)
-
-    # 3. 调用 API
-    user_id = test_state["user_eva_id"]
-    prompt_id = test_state["prompt_id"]
-    headers = {"X-User-ID": str(user_id)}
-    payload = {"variables": {"product_name": "Gloom"}}
-    
-    with httpx.Client() as client:
-        response = client.post(f"http://localhost:8002/prompts/{prompt_id}/execute", json=payload, headers=headers)
-
-    # 4. 断言：API 应该返回 500 错误，但数据库中应有记录
-    assert response.status_code == 500
-    assert "timed out" in response.json()["detail"]
-
-    # 5. 验证数据库中确实创建了一条失败的记录
-    with httpx.Client() as client:
-        history_response = client.get(f"http://localhost:8002/prompts/{prompt_id}/executions", headers=headers)
-        assert history_response.status_code == 200
-        history_data = history_response.json()
-        
-        # 查找那条失败的记录
-        failed_record = next((r for r in history_data if r["error_message"] is not None), None)
-        assert failed_record is not None
-        assert "timed out" in failed_record["error_message"]
-        assert failed_record["response_text"] is None
-        
-    print("\n✅ Failed prompt execution (mocked) test passed")
-
-
-@pytest.mark.depends(on=["test_1_successful_prompt_execution"])
-def test_3_list_execution_history():
-    """
-    测试获取执行历史记录的端点
-    """
-    user_id = test_state["user_eva_id"]
+    user_id = test_state["user_frank_id"]
     prompt_id = test_state["prompt_id"]
     headers = {"X-User-ID": str(user_id)}
     
     with httpx.Client() as client:
-        response = client.get(f"http://localhost:8002/prompts/{prompt_id}/executions", headers=headers)
+        response = client.get(f"{BASE_URL}/prompts/{prompt_id}/executions", headers=headers)
         
     assert response.status_code == 200
     data = response.json()
     
-    # 历史记录中应该至少有 test_1 和 test_2 创建的两条记录
-    assert len(data) >= 2
+    assert len(data) >= 1
     
-    # 验证第一条成功的记录存在
-    successful_record_ids = [r["id"] for r in data if r["error_message"] is None]
-    assert test_state["execution_id"] in successful_record_ids
+    # 查找我们刚刚创建的那条成功记录
+    execution_ids = [r["id"] for r in data]
+    assert test_state["execution_id"] in execution_ids
     
-    print("\n✅ List execution history test passed")
-
+    # 找到记录并验证其内容
+    record = next((r for r in data if r["id"] == test_state["execution_id"]), None)
+    assert record is not None
+    assert record["error_message"] is None
+    assert record["token_usage"]["total_tokens"] > 0
+    
+    print("\n✅ List real execution history test passed")
 ```
 
 1. **重启并清空数据库**
@@ -2278,8 +2278,459 @@ def test_3_list_execution_history():
     --- ✅ All tests passed successfully! ---
     ```
 
-3. **提交你的成果**
-    你已经完成了这个项目中最复杂、最核心的进阶功能！
+3. **提交成果**
+    完成
+
+    ```bash
+    # git add .
+    git commit -m "feat(llm): implement prompt execution with OpenAI and history tracking"
+    ```
+
+### 4.目标：实现评分系统
+
+**核心任务分解：**
+
+1. [✅]**更新数据库模型**：为应用添加功能，允许用户对 Prompt 进行 1 到 5 星的评分，查看平均分，并按分数对 Prompt 进行排序。
+2. [✅]**更新 `Pydantic Schemas`**：更新 `CRUD` 函数。
+3. [✅]**更新业务逻辑层**：将添加处理评分的函数，并重点修改 `get_prompts` 函数以支持平均分计算和排序。
+4. [✅]**更新 API 接口**：将新的业务逻辑通过 `API` 端点暴露出去。
+5. [✅]**测试脚本**：实现测试脚本。
+
+#### **第1步：更新数据库模型 (`models.py`)**
+
+需要将 `openai` SDK 添加到项目中，并配置好 API 密钥的管理。
+
+1. **导入 `UniqueConstraint`**：用于强制执行“一个用户只能对一个 Prompt 评分一次”的规则。
+2. **创建 `Rating` 模型**：这个新表将存储每一条独立的评分记录。
+3. **更新 `Prompt` 模型**：添加一个指向其所有评分的关系（relationship）。
+
+```python
+# src/app/models.py
+
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table, JSON, UniqueConstraint # 导入 UniqueConstraint
+from sqlalchemy.orm import relationship
+from sqlalchemy.ext.declarative import declarative_base
+from datetime import datetime
+
+Base = declarative_base()
+
+# --- 新增：评分模型 ---
+class Rating(Base):
+    __tablename__ = "ratings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    score = Column(Integer, nullable=False) # 例如：1 到 5 分
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # 定义一个复合唯一约束
+    __table_args__ = (
+        UniqueConstraint('user_id', 'prompt_id', name='_user_prompt_uc'),
+    )
+
+    prompt = relationship("Prompt", back_populates="ratings")
+    user = relationship("User")
+
+    def __repr__(self):
+        return f"<Rating(id={self.id}, prompt_id={self.prompt_id}, score={self.score})>"
+
+# ... (Tag, User 模型保持不变) ...
+
+class Prompt(Base):
+    # ... (现有字段) ...
+    tags = relationship(
+        "Tag",
+        secondary=prompt_tag_association,
+        back_populates="prompts"
+    )
+    executions = relationship("PromptExecution", back_populates="prompt", cascade="all, delete-orphan")
+    
+    # --- 新增：与 ratings 的关系 ---
+    ratings = relationship("Rating", back_populates="prompt", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<Prompt(id={self.id}, title='{self.title}')>"
+
+# ... (PromptExecution 模型保持不变) ...
+```
+
+#### **第2步：更新 Pydantic Schemas (`schemas.py`)**
+
+1. **创建 `Rating` 相关的 Schema**：用于创建和返回评分数据。
+2. **更新 `PromptResponse`**：添加一个新的字段 `average_rating` 来显示计算出的平均分。
+
+```python
+# src/app/schemas.py
+
+# ... (其他导入) ...
+
+# --- 新增：评分相关的 Schemas ---
+
+class RatingCreate(BaseModel):
+    score: int = Field(..., ge=1, le=5, description="评分分数，必须在1到5之间")
+
+class RatingResponse(BaseModel):
+    id: int
+    prompt_id: int
+    user_id: int
+    score: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+# ... (Tag, User Schemas 保持不变) ...
+
+# --- 更新：PromptResponse Schema ---
+class PromptResponse(PromptBase):
+    id: int
+    usage_count: int
+    created_at: datetime
+    updated_at: datetime
+    owner: UserResponse
+    tags: List[TagResponse] = []
+    
+    # --- 新增 ---
+    average_rating: Optional[float] = Field(None, description="该 Prompt 的平均评分")
+
+    class Config:
+        from_attributes = True
+
+# ... (PromptList, PromptExecuteRequest, PromptExecutionResponse schemas 保持不变) ...
+```
+
+#### **第3步：更新业务逻辑层 (`crud.py`)**
+
+这是最重要的改动。我们将添加处理评分的函数，并重点修改 `get_prompts` 函数以支持平均分计算和排序。
+
+```python
+# src/app/crud.py
+
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError # 导入 IntegrityError
+# ... (其他导入) ...
+
+# ... (User, Tag CRUD 函数保持不变) ...
+
+# --- 新增：Rating CRUD ---
+
+def create_rating_for_prompt(db: Session, prompt_id: int, user_id: int, score: int) -> Optional[models.Rating]:
+    """为一个 Prompt 创建一条新的用户评分记录。"""
+    db_rating = models.Rating(prompt_id=prompt_id, user_id=user_id, score=score)
+    db.add(db_rating)
+    try:
+        db.commit()
+        db.refresh(db_rating)
+        return db_rating
+    except IntegrityError: # 捕获违反唯一约束的异常
+        db.rollback()
+        return None
+
+def get_ratings_for_prompt(db: Session, prompt_id: int, skip: int = 0, limit: int = 100):
+    """获取指定 Prompt 的所有评分记录。"""
+    return db.query(models.Rating)\
+             .filter(models.Rating.prompt_id == prompt_id)\
+             .offset(skip)\
+             .limit(limit)\
+             .all()
+
+# --- 更新：get_prompts 函数 ---
+def get_prompts(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    tags: Optional[List[str]] = None,
+    sort: Optional[str] = None # 新增排序参数
+):
+    """
+    获取 Prompt 列表，现在支持按平均分排序。
+    """
+    # 将平均分计算定义为一个 labeled column
+    avg_rating = func.avg(models.Rating.score).label("average_rating")
+    
+    # 基础查询，使用 outerjoin 以包含没有评分的 Prompt
+    query = db.query(models.Prompt, avg_rating)\
+              .outerjoin(models.Rating)\
+              .group_by(models.Prompt.id)
+
+    if tags:
+        for tag_name in tags:
+            query = query.filter(models.Prompt.tags.any(name=tag_name))
+    
+    # 处理排序逻辑
+    if sort == "rating":
+        # 按计算出的平均分降序排列。nullslast() 会将没有评分的（NULL）排在最后。
+        query = query.order_by(avg_rating.desc().nullslast())
+    else:
+        # 默认按创建时间排序
+        query = query.order_by(models.Prompt.created_at.desc())
+
+    # 在应用分页前计算总数
+    total = query.count()
+    
+    # 应用分页
+    results = query.offset(skip).limit(limit).all()
+    
+    # 查询结果是一个元组 (Prompt, average_rating) 的列表，我们需要将它们合并。
+    prompts_with_ratings = []
+    for prompt, rating in results:
+        # 将计算出的平均分动态地附加到 Prompt 对象上
+        prompt.average_rating = rating if rating is not None else 0.0
+        prompts_with_ratings.append(prompt)
+
+    return prompts_with_ratings, total
+
+# ... (其他 CRUD 函数保持不变) ...
+```
+
+#### **第4步：更新 API 接口 (`main.py`)**
+
+最后，我们通过 API 将评分功能暴露出去。
+
+```python
+# src/app/main.py
+
+# ... (导入) ...
+# 导入新的 Schemas
+from .schemas import RatingCreate, RatingResponse
+
+# ... (app 设置, 健康检查等) ...
+
+# --- 新增：评分相关的 API 端点 ---
+
+@app.post("/prompts/{prompt_id}/ratings", response_model=RatingResponse, summary="为一个 Prompt 评分")
+async def rate_prompt_endpoint(
+    prompt_id: int,
+    rating: RatingCreate,
+    db: DBSession,
+    current_user: CurrentUser
+):
+    """
+    为一个 Prompt 提交评分。
+    - 一个用户只能对同一个 Prompt 评分一次。
+    - 分数必须在 1 到 5 之间。
+    - 需要用户认证。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    # 防止用户给自己创建的 Prompt 评分
+    if db_prompt.user_id == current_user.id:
+        raise HTTPException(status_code=403, detail="You cannot rate your own prompt")
+
+    db_rating = crud.create_rating_for_prompt(
+        db, prompt_id=prompt_id, user_id=current_user.id, score=rating.score
+    )
+    
+    if db_rating is None:
+        # 409 Conflict 状态码表示请求与服务器当前状态冲突（这里指重复评分）
+        raise HTTPException(status_code=409, detail="You have already rated this prompt")
+        
+    return db_rating
+
+@app.get("/prompts/{prompt_id}/ratings", response_model=List[RatingResponse], summary="获取一个 Prompt 的所有评分")
+async def get_prompt_ratings_endpoint(prompt_id: int, db: DBSession):
+    """
+    获取指定 Prompt 的所有评分记录。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    return crud.get_ratings_for_prompt(db, prompt_id=prompt_id)
+
+
+# --- 更新：list_prompts_endpoint ---
+@app.get("/prompts", response_model=schemas.PromptList, summary="列出所有 Prompt (支持筛选和排序)")
+async def list_prompts_endpoint(
+    db: DBSession,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    tags: Optional[str] = Query(None, description="用逗号分隔的标签名, e.g., 'marketing,sales'"),
+    sort: Optional[str] = Query(None, description="排序字段。使用 'rating' 按平均分排序。")
+):
+    """
+    获取所有 Prompt 的列表。
+    支持分页、按标签筛选以及按平均分排序。
+    """
+    tag_list = tags.split(',') if tags else None
+    prompts, total = crud.get_prompts(db, skip=skip, limit=limit, tags=tag_list, sort=sort)
+    return {"total": total, "prompts": prompts}
+
+# ... (其他端点保持不变) ...
+```
+
+#### **第五步：编写模拟测试用例 (`test_ratings.py`)和提交**
+
+运行这个测试之前，请务必确保你已经通过 `docker compose down -v` 和 `docker compose up --build` 重置并启动了一个全新的、干净的环境。
+
+在 `tests/` 目录下创建一个新文件 `test_ratings.py`，并将以下代码粘贴进去。
+
+```python
+# tests/test_ratings.py
+
+import httpx
+import pytest
+
+BASE_URL = "http://localhost:8002"
+test_state = {}
+
+# === 辅助函数 ===
+def create_user_for_rating(username, password):
+    with httpx.Client() as client:
+        res = client.post(f"{BASE_URL}/users", json={"username": username, "password": password})
+        assert res.status_code == 201
+        return res.json()
+
+def create_prompt_for_rating(user_id, title):
+    with httpx.Client() as client:
+        headers = {"X-User-ID": str(user_id)}
+        res = client.post(f"{BASE_URL}/prompts", json={"title": title, "content": "Test content"}, headers=headers)
+        assert res.status_code == 201
+        return res.json()
+
+# === 测试设置 ===
+@pytest.fixture(scope="module", autouse=True)
+def setup_for_rating_tests():
+    print("\n--- Setting up data for rating tests ---")
+    user_george = create_user_for_rating("george", "pass1")
+    user_helen = create_user_for_rating("helen", "pass2")
+    user_ian = create_user_for_rating("ian", "pass3")
+    
+    test_state["user_george_id"] = user_george["id"]
+    test_state["user_helen_id"] = user_helen["id"]
+    test_state["user_ian_id"] = user_ian["id"]
+    
+    prompt_by_george = create_prompt_for_rating(user_george["id"], "George's Famous Prompt")
+    test_state["prompt_id"] = prompt_by_george["id"]
+    
+    # 创建另一个 prompt 用于排序测试
+    prompt2_by_george = create_prompt_for_rating(user_george["id"], "George's Less Famous Prompt")
+    test_state["prompt2_id"] = prompt2_by_george["id"]
+
+    print("--- Rating test setup complete ---")
+
+
+# === 测试用例 ===
+
+def test_1_helen_rates_prompt():
+    """Helen (非所有者) 为 George 的 Prompt 评 5 分"""
+    helen_id = test_state["user_helen_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(helen_id)}
+    
+    with httpx.Client() as client:
+        response = client.post(f"{BASE_URL}/prompts/{prompt_id}/ratings", json={"score": 5}, headers=headers)
+        assert response.status_code == 200 # 应该是 200 OK 或 201 Created，取决于你的实现
+        data = response.json()
+        assert data["score"] == 5
+        assert data["user_id"] == helen_id
+    print("\n✅ Helen successfully rated a prompt.")
+
+def test_2_george_cannot_rate_his_own_prompt():
+    """George (所有者) 尝试为自己的 Prompt 评分，应该失败"""
+    george_id = test_state["user_george_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(george_id)}
+    
+    with httpx.Client() as client:
+        response = client.post(f"{BASE_URL}/prompts/{prompt_id}/ratings", json={"score": 5}, headers=headers)
+        assert response.status_code == 403
+        assert "cannot rate your own prompt" in response.json()["detail"]
+    print("\n✅ Owner was correctly forbidden from rating their own prompt.")
+
+def test_3_helen_cannot_rate_same_prompt_twice():
+    """Helen 尝试重复评分，应该失败"""
+    helen_id = test_state["user_helen_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(helen_id)}
+    
+    with httpx.Client() as client:
+        response = client.post(f"{BASE_URL}/prompts/{prompt_id}/ratings", json={"score": 4}, headers=headers)
+        assert response.status_code == 409 # 409 Conflict
+        assert "already rated this prompt" in response.json()["detail"]
+    print("\n✅ User was correctly forbidden from rating the same prompt twice.")
+
+def test_4_ian_rates_prompt_and_check_average():
+    """Ian 也来评分，然后我们检查平均分"""
+    ian_id = test_state["user_ian_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(ian_id)}
+    
+    with httpx.Client() as client:
+        client.post(f"{BASE_URL}/prompts/{prompt_id}/ratings", json={"score": 3}, headers=headers)
+    
+    # 现在获取 prompt 详情来检查平均分
+    with httpx.Client() as client:
+        response = client.get(f"{BASE_URL}/prompts/{prompt_id}")
+        assert response.status_code == 200
+        data = response.json()
+        # Helen 评了 5 分，Ian 评了 3 分，平均分应该是 (5+3)/2 = 4.0
+        assert data["average_rating"] == 4.0
+    print("\n✅ Average rating was calculated correctly (4.0).")
+
+def test_5_sort_prompts_by_rating():
+    """测试按评分排序功能"""
+    # 首先，给第二个 prompt (prompt2) 一个较低的评分
+    ian_id = test_state["user_ian_id"]
+    prompt2_id = test_state["prompt2_id"]
+    headers = {"X-User-ID": str(ian_id)}
+    with httpx.Client() as client:
+        client.post(f"{BASE_URL}/prompts/{prompt2_id}/ratings", json={"score": 2}, headers=headers)
+
+    # 现在，按评分排序获取 prompt 列表
+    with httpx.Client() as client:
+        response = client.get(f"{BASE_URL}/prompts?sort=rating")
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 列表中的第一个 prompt 应该是平均分为 4.0 的那个
+        assert len(data["prompts"]) >= 2
+        assert data["prompts"][0]["id"] == test_state["prompt_id"]
+        assert data["prompts"][0]["average_rating"] == 4.0
+        
+        # 第二个应该是平均分为 2.0 的那个
+        assert data["prompts"][1]["id"] == test_state["prompt2_id"]
+        assert data["prompts"][1]["average_rating"] == 2.0
+    print("\n✅ Prompts were correctly sorted by rating in descending order.")
+```
+
+1. **重启并清空数据库**
+    由于你再次修改了数据库模型，必须执行此步骤！
+
+    ```bash
+    # 在第一个终端
+    docker compose down -v
+    docker compose up --build
+    ```
+
+    **注意**：观察日志，确保你没有看到 `OpenAI 客户端初始化失败` 的警告。如果你看到了，请检查 `.env` 文件中的 `OPENAI_API_KEY` 是否正确设置。
+
+2. **运行所有测试**
+    打开第二个终端，运行测试脚本。
+
+    ```bash
+    ./test.sh tests/test_llm_integration.py
+    ```
+
+    ```bash
+    ✅ Real LLM call successful. Response: 'Arr, matey, the core of relativity be that the laws o’ physics be the same for all sailors, no matter how fast their ship be sailin’!'
+    ✅ Token usage recorded: {'completion_tokens': 36, 'prompt_tokens': 32, 'total_tokens': 68, 'completion_tokens_details': {'accepted_prediction_tokens': None, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': None}, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}}
+    PASSED
+    tests/test_llm_integration.py::test_2_list_real_execution_history
+    ✅ List real execution history test passed
+    PASSED
+
+    ==================================================== 2 passed in 8.63s ===================================================== 
+
+    --- ✅ All tests passed successfully! ---
+    ```
+
+3. **提交成果**
+    完成
 
     ```bash
     # git add .

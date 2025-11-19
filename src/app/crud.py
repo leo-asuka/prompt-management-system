@@ -1,6 +1,7 @@
 # src/app/crud.py
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from .models import Prompt
 from .schemas import PromptCreate, PromptUpdate
 from typing import List, Optional
@@ -28,7 +29,7 @@ def create_user(db: Session, user: schemas.UserCreate):
     db.refresh(db_user)
     return db_user
 
-# ==================== Tag CRUD (New) ====================
+# ==================== Tag CRUD====================
 
 def get_tag(db: Session, tag_id: int):
     """根据 ID 获取标签"""
@@ -66,7 +67,29 @@ def remove_tag_from_prompt(db: Session, db_prompt: models.Prompt, db_tag: models
         db.refresh(db_prompt)
     return db_prompt
 
-# ==================== Prompt CRUD ====================
+# ==================== Rating CRUD ====================
+
+def create_rating_for_prompt(db: Session, prompt_id: int, user_id: int, score: int) -> Optional[models.Rating]:
+    """为一个 Prompt 创建一条新的用户评分记录。"""
+    db_rating = models.Rating(prompt_id=prompt_id, user_id=user_id, score=score)
+    db.add(db_rating)
+    try:
+        db.commit()
+        db.refresh(db_rating)
+        return db_rating
+    except IntegrityError: # 捕获违反唯一约束的异常
+        db.rollback()
+        return None
+
+def get_ratings_for_prompt(db: Session, prompt_id: int, skip: int = 0, limit: int = 100):
+    """获取指定 Prompt 的所有评分记录。"""
+    return db.query(models.Rating)\
+             .filter(models.Rating.prompt_id == prompt_id)\
+             .offset(skip)\
+             .limit(limit)\
+             .all()
+
+# ==================== Prompt CRUD 更新 ====================
 # 创建 Prompt 时需要知道是哪个用户创建的
 def create_prompt(db: Session, prompt: schemas.PromptCreate, user_id: int):
     """
@@ -92,34 +115,64 @@ def get_prompts_by_user(db: Session, user_id: int, skip: int = 0, limit: int = 1
     """获取指定用户的所有 Prompts"""
     return db.query(models.Prompt).filter(models.Prompt.user_id == user_id).offset(skip).limit(limit).all()
 
+# 更新：get_prompts 函数
 def get_prompts(
     db: Session,
     skip: int = 0,
     limit: int = 100,
-    tags: Optional[List[str]] = None
+    tags: Optional[List[str]] = None,
+    sort: Optional[str] = None
 ):
-    """
-    从数据库中查询 Prompt 列表，支持分页和按标签筛选。
-    如果提供了 tags 列表，则只返回包含所有指定标签的 Prompts。
-    """
-    query = db.query(models.Prompt)
+    avg_rating = func.avg(models.Rating.score).label("average_rating")
+    
+    base_query = db.query(models.Prompt)\
+                   .outerjoin(models.Rating)
 
     if tags:
-        # 这个查询逻辑确保返回的 Prompt 必须拥有 *所有* 指定的标签
         for tag_name in tags:
-            query = query.filter(models.Prompt.tags.any(name=tag_name))
-            
-    # 计算总数（在应用分页之前）
-    total = query.count()
+            base_query = base_query.filter(models.Prompt.tags.any(name=tag_name))
     
-    # 应用分页
-    prompts = query.offset(skip).limit(limit).all()
+    # 【修复】先计算总数
+    total_query = base_query.group_by(models.Prompt.id)
+    total = total_query.count()
+
+    # 现在构建包含聚合和排序的主查询
+    main_query = base_query.add_columns(avg_rating)\
+                           .group_by(models.Prompt.id)
+
+    if sort == "rating":
+        main_query = main_query.order_by(avg_rating.desc().nullslast())
+    else:
+        main_query = main_query.order_by(models.Prompt.created_at.desc())
+
+    results = main_query.offset(skip).limit(limit).all()
     
-    return prompts, total
+    prompts_with_ratings = []
+    for prompt, rating in results:
+        prompt.average_rating = rating if rating is not None else 0.0
+        prompts_with_ratings.append(prompt)
+
+    return prompts_with_ratings, total
 
 def get_prompt(db: Session, prompt_id: int):
     """根据 ID 查询单个 Prompt。.first() 表示只返回第一条匹配的记录，如果没有找到则返回 None。"""
     return db.query(Prompt).filter(Prompt.id == prompt_id).first()
+
+def get_prompt_with_average_rating(db: Session, prompt_id: int):
+    """获取单个 Prompt，并动态计算其平均分。"""
+    avg_rating = func.avg(models.Rating.score).label("average_rating")
+    
+    result = db.query(models.Prompt, avg_rating)\
+               .outerjoin(models.Rating)\
+               .filter(models.Prompt.id == prompt_id)\
+               .group_by(models.Prompt.id)\
+               .first()
+
+    if result:
+        prompt, rating = result
+        prompt.average_rating = rating if rating is not None else 0.0
+        return prompt
+    return None
 
 def update_prompt(db: Session, db_prompt: models.Prompt, prompt_update: schemas.PromptUpdate):
     """更新一个已存在的 Prompt 记录。这个函数现在直接接收一个 SQLAlchemy 模型实例 (db_prompt)，而不是 prompt_id。"""

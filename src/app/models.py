@@ -1,5 +1,5 @@
 # src/app/models.py
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship  # 导入 relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
@@ -11,6 +11,27 @@ prompt_tag_association = Table('prompt_tag_association', Base.metadata,
     Column('prompt_id', Integer, ForeignKey('prompts.id'), primary_key=True),
     Column('tag_id', Integer, ForeignKey('tags.id'), primary_key=True)
 )
+
+# 评分模型
+class Rating(Base):
+    __tablename__ = "ratings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    score = Column(Integer, nullable=False) # 例如：1 到 5 分
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # 定义一个复合唯一约束
+    __table_args__ = (
+        UniqueConstraint('user_id', 'prompt_id', name='_user_prompt_uc'),
+    )
+
+    prompt = relationship("Prompt", back_populates="ratings")
+    user = relationship("User")
+
+    def __repr__(self):
+        return f"<Rating(id={self.id}, prompt_id={self.prompt_id}, score={self.score})>"
 
 class Tag(Base):
     """
@@ -91,6 +112,7 @@ class Prompt(Base):
 
     executions = relationship("PromptExecution", back_populates="prompt", cascade="all, delete-orphan")
 
+    ratings = relationship("Rating", back_populates="prompt", cascade="all, delete-orphan")
     def __repr__(self):
         return f"<Prompt(id={self.id}, title='{self.title}', category='{self.category}')>"
     
