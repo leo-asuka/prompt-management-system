@@ -3,6 +3,22 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
+# ==================== User Schemas ====================
+
+class UserBase(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+
+class UserCreate(UserBase):
+    password: str = Field(..., min_length=6, description="用户密码")
+
+class UserResponse(UserBase):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+# ==================== Prompt Schemas ====================
 
 class PromptBase(BaseModel):
     """提示词基础模式"""
@@ -23,12 +39,14 @@ class PromptUpdate(BaseModel):
     category: Optional[str] = Field(None, max_length=50, description="新的 Prompt 分类")
 
 
+# 在返回 Prompt 信息时，也一并返回创建者的基本信息
 class PromptResponse(PromptBase):
     """返回提示词数据时的模式"""
     id: int
     usage_count: int
     created_at: datetime
     updated_at: datetime
+    owner: UserResponse  # 嵌套 UserResponse Schema
 
     # Pydantic V2 的配置项
     class Config:

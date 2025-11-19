@@ -29,7 +29,10 @@ echo ""
 # pytest 会自动发现 tests/ 目录下的 test_*.py 文件
 # --verbose 参数让输出更详细
 # -s 参数可以显示测试函数中的 print() 输出
-pytest --verbose -s
+# 运行 pytest，并将脚本的所有参数 ($@) 传递给 pytest 命令
+# 如果没有提供参数，$@ 就是空的，pytest 会像以前一样运行所有测试
+# ./test.sh tests/test_users_and_auth.py
+pytest --verbose -s "$@"
 
 # 检查 pytest 的退出码
 if [ $? -eq 0 ]; then

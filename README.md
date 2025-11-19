@@ -144,7 +144,7 @@
     ./test.sh
     ```
 
-    *预期响应:* `...--- ✅ All tests passed successfully! ---`
+    *预期响应:* `...--- ✅ All tests passed successfully! ---
 
 ## GitHub Flow 实践 (作业提醒)
 

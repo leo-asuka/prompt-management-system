@@ -1,5 +1,5 @@
 # src/app/main.py
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Header # 导入 Header
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, text, func
@@ -8,7 +8,7 @@ from typing import Annotated
 from . import models
 from .database import lifespan, get_db
 from . import crud
-from .schemas import PromptCreate, PromptUpdate, PromptResponse, PromptList
+from .schemas import PromptCreate, PromptUpdate, PromptResponse, PromptList, UserResponse, UserCreate
 from .config import settings
 
 # 确保在 FastAPI 启动前，数据库表已经通过 Base.metadata 注册
@@ -22,6 +22,20 @@ app = FastAPI(
 )
 
 DBSession = Annotated[Session, Depends(get_db)]
+
+# --- 新增：用户身份验证依赖项 ---
+async def get_current_user(x_user_id: Annotated[int, Header()], db: DBSession):
+    """
+    一个简单的依赖项，用于从请求头 X-User-ID 获取用户。
+    在真实应用中，这里应该是复杂的 token 验证逻辑。
+    """
+    user = db.query(models.User).filter(models.User.id == x_user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid user ID")
+    return user
+
+# 定义一个类型别名，方便在路径操作函数中使用
+CurrentUser = Annotated[models.User, Depends(get_current_user)]
 
 # ==================== 健康检查端点 ====================
 
@@ -62,8 +76,8 @@ async def db_health_check(db: DBSession):
 
 # ==================== 提示词 CRUD 端点 ====================
 
-@app.post("/prompts", response_model=PromptResponse, status_code=201, summary="创建新提示词")
-async def create_prompt_endpoint(prompt: PromptCreate, db: DBSession):
+@app.post("/prompts", response_model=PromptResponse, status_code=201, summary="创建新提示词 (需要认证)")
+async def create_prompt_endpoint(prompt: PromptCreate, db: DBSession, current_user: CurrentUser):
     """
     创建一个新的提示词模板。FastAPI 会自动处理：
     1. 校验请求体是否符合 PromptCreate schema。
@@ -74,7 +88,7 @@ async def create_prompt_endpoint(prompt: PromptCreate, db: DBSession):
     - **content**: 提示词内容（必填）
     - **category**: 提示词分类（可选）
     """
-    return crud.create_prompt(db=db, prompt=prompt)
+    return crud.create_prompt(db=db, prompt=prompt, user_id=current_user.id)
 
 @app.get("/prompts", response_model=PromptList, summary="列出所有提示词")
 async def list_prompts_endpoint(
@@ -106,23 +120,35 @@ async def get_prompt_endpoint(prompt_id: int, db: DBSession):
         raise HTTPException(status_code=404, detail="Prompt not found")
     return prompt
 
-@app.put("/prompts/{prompt_id}", response_model=PromptResponse, summary="更新提示词")
-async def update_prompt_endpoint(prompt_id: int, prompt_update: PromptUpdate, db: DBSession):
+@app.put("/prompts/{prompt_id}", response_model=PromptResponse, summary="更新提示词 (需要认证和所有权)")
+async def update_prompt_endpoint(
+    prompt_id: int, 
+    prompt_update: PromptUpdate, 
+    db: DBSession, 
+    current_user: CurrentUser
+):
     """
     更新指定ID的提示词
 
+    - **只有提示词的所有者才能更新**。
+    - **需要** 在请求头中提供 `X-User-ID`。
     - **prompt_id**: 提示词ID
     - **title**: 新的标题（可选）
     - **content**: 新的内容（可选）
     - **category**: 新的分类（可选）
     """
-    prompt = crud.update_prompt(db, prompt_id, prompt_update)
-    if not prompt:
+    db_prompt = crud.get_prompt(db, prompt_id)
+    if not db_prompt:
         raise HTTPException(status_code=404, detail="Prompt not found")
-    return prompt
+    
+    # --- 权限检查 ---
+    if db_prompt.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to update this prompt")
+        
+    return crud.update_prompt(db=db, db_prompt=db_prompt, prompt_update=prompt_update)
 
-@app.delete("/prompts/{prompt_id}", status_code=204, summary="删除提示词")
-async def delete_prompt_endpoint(prompt_id: int, db: DBSession):
+@app.delete("/prompts/{prompt_id}", status_code=204, summary="删除提示词 (需要认证和所有权)")
+async def delete_prompt_endpoint(prompt_id: int, db: DBSession, current_user: CurrentUser):
     """
     删除指定ID的提示词
 
@@ -133,9 +159,38 @@ async def delete_prompt_endpoint(prompt_id: int, db: DBSession):
     db_prompt = crud.get_prompt(db, prompt_id)
     if db_prompt is None:
         raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    if db_prompt.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this prompt")
 
-    crud.delete_prompt(db, prompt_id)
+    crud.delete_prompt(db, db_prompt)
     
     # 【修复】对于 204 No Content，我们应该返回 None。
     # FastAPI 会自动处理，生成一个没有 body 的正确 HTTP 响应。
     return None
+
+# ==================== 用户端点 ====================
+
+@app.post("/users", response_model=UserResponse, status_code=201, summary="创建新用户")
+async def create_user_endpoint(user: UserCreate, db: DBSession):
+    """
+    注册一个新用户。用户名必须是唯一的。
+    """
+    db_user = crud.get_user_by_username(db, username=user.username)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    return crud.create_user(db=db, user=user)
+
+
+@app.get("/users/{user_id}/prompts", response_model=list[PromptResponse], summary="获取用户的所有提示词")
+async def get_user_prompts_endpoint(user_id: int, db: DBSession):
+    """
+    根据用户ID获取该用户创建的所有提示词列表。
+    """
+    # 检查用户是否存在
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    prompts = crud.get_prompts_by_user(db=db, user_id=user_id)
+    return prompts

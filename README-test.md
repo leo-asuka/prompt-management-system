@@ -48,7 +48,7 @@ cd LLM-X-S2-L1
 docker compose up --build
 
 # 3. 运行自动化测试（新终端）
-./test.sh
+./test.sh tests/test_prompts.py
 ```
 
 ### 访问服务
@@ -606,3 +606,534 @@ htmlcov/
 ````
 
 -----
+
+## ✨ 进阶版本
+
+### 1.目标：实现用户与权限系统
+
+**核心任务分解：**
+
+1. [ ]**数据模型层**：创建 `User` 模型，并在 `Prompt` 模型中添加外键关联。
+2. [ ]**数据校验层**：为 User 创建 Pydantic Schemas。
+3. [ ]**业务逻辑层**：更新 CRUD 函数，使其能够处理用户关联。
+4. [ ]**API 接口层**：创建用户注册端点，并修改 Prompt 相关端点以实现权限控制。
+5. [ ]**安全**：实现密码哈希存储（这是用户系统最最关键的一点）。
+
+#### **第一步：安装密码处理库**
+
+不能在数据库中明文存储密码。`bcrypt` 是一个非常流行且安全的密码哈希库。
+
+1. **将 `bcrypt` 添加到你的项目依赖中**。
+    打开 `pyproject.toml` 文件，在 `dependencies` 列表下添加它：
+
+    ```toml
+    # pyproject.toml
+
+    [project]
+    dependencies = [
+        # ... a lot of dependencies
+        "sqlalchemy>=2.0.31",        # ORM
+        "bcrypt>=4.1.3",             # 密码哈希库
+        "passlib[bcrypt]>=1.7.4",    # 
+    ]
+    ```
+
+    添加后，重启 Docker Compose (`docker compose up --build`) 来重新构建镜像并安装新的依赖。
+
+### **第二步：更新数据模型 (`models.py`)**
+
+我们需要创建 `User` 表，并在 `Prompt` 表中添加一个字段来记录是谁创建了这个 Prompt。
+
+1. **导入必要的模块**：
+    在 `src/app/models.py` 文件的顶部，从 `sqlalchemy` 导入 `ForeignKey` 和 `relationship`。
+
+2. **创建 `User` 模型**：
+    在 `Prompt` 类定义的**上方**，添加 `User` 模型。
+
+3. **更新 `Prompt` 模型**：
+    在 `Prompt` 模型中添加 `user_id` 字段作为外键，并建立与 `User` 的关系。
+
+**完整的 `src/app/models.py` 文件应该看起来像这样：**
+
+```python
+# src/app/models.py
+...
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy.orm import relationship  # 导入 relationship
+...
+class User(Base):
+    """
+    用户数据模型
+    """
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False) # 存储哈希后的密码
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # 建立与 Prompt 模型的关系
+    # 'prompts' 是一个虚拟字段，可以让我们通过 user.prompts 访问该用户的所有 prompts
+    # back_populates="owner" 指定了反向关系，在 Prompt 模型中名为 'owner'
+    prompts = relationship("Prompt", back_populates="owner")
+
+    def __repr__(self):
+        return f"<User(id={self.id}, username='{self.username}')>"
+
+
+class Prompt(Base):
+...
+    # 新增字段：外键，关联到 users 表的 id 字段
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    # 建立与 User 模型的关系
+    # 'owner' 是一个虚拟字段，可以让我们通过 prompt.owner 访问创建者 User 对象
+    owner = relationship("User", back_populates="prompts")
+...
+```
+
+### **第三步：更新 Pydantic Schemas (`schemas.py`)**
+
+为 User 创建新的 Schema，并更新 `PromptResponse` 以便能显示创建者的信息。
+
+```python
+# src/app/schemas.py
+...
+# ==================== User Schemas ====================
+
+class UserBase(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+
+class UserCreate(UserBase):
+    password: str = Field(..., min_length=6, description="用户密码")
+
+class UserResponse(UserBase):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+# ==================== Prompt Schemas ====================
+...
+
+# 【重要更新】在返回 Prompt 信息时，也一并返回创建者的基本信息
+class PromptResponse(PromptBase):
+...
+    owner: UserResponse  # 嵌套 UserResponse Schema
+...
+```
+
+### **第四步：更新 CRUD 操作 (`crud.py`)**
+
+现在的 CRUD 操作需要知道是**哪个用户**在执行操作。
+
+1. **创建 User 相关的 CRUD 函数**：
+    - `get_user_by_username`：用于检查用户名是否已存在。
+    - `create_user`：创建新用户，并哈希密码。
+
+2. **修改 `create_prompt` 函数**：
+    - 需要额外接收一个 `user_id` 参数，以便将新创建的 Prompt 与用户关联。
+
+```python
+# src/app/crud.py
+from sqlalchemy.orm import Session
+from . import models, schemas # 导入 models 和 schemas
+import bcrypt
+
+# ==================== User CRUD ====================
+
+def _hash_password(password: str) -> str:
+    """使用 bcrypt 生成一个哈希字符串，兼容当前依赖版本。"""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def get_user_by_username(db: Session, username: str):
+    """根据用户名查询用户"""
+    return db.query(models.User).filter(models.User.username == username).first()
+
+def create_user(db: Session, user: schemas.UserCreate):
+    """创建新用户，并哈希密码"""
+    hashed_password = _hash_password(user.password)
+    db_user = models.User(username=user.username, hashed_password=hashed_password)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+# ==================== Prompt CRUD ====================
+
+# 【重要更新】创建 Prompt 时需要知道是哪个用户创建的
+def create_prompt(db: Session, prompt: schemas.PromptCreate, user_id: int):
+    db_prompt = Prompt(
+        **prompt.model_dump(),
+        user_id=user_id,
+    )
+    db.add(db_prompt)
+    db.commit()
+    db.refresh(db_prompt)
+    return db_prompt
+
+def get_prompts_by_user(db: Session, user_id: int, skip: int = 0, limit: int = 100):
+    return db.query(models.Prompt).filter(models.Prompt.user_id == user_id).offset(skip).limit(limit).all()
+
+# get_prompts, get_prompt 暂时保持不变，
+# 我们将在 API 层处理权限检查
+
+def update_prompt(db: Session, db_prompt: models.Prompt, prompt_update: schemas.PromptUpdate):
+    """更新一个已存在的 Prompt 记录。这个函数现在直接接收一个 SQLAlchemy 模型实例 (db_prompt)，而不是 prompt_id。"""
+    update_data = prompt_update.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(db_prompt, field, value)
+
+    db.add(db_prompt)  # 虽然 SQLAlchemy 跟踪了对象，但显式 add 更清晰
+    db.commit()
+    db.refresh(db_prompt)
+    return db_prompt
+
+def delete_prompt(db: Session, db_prompt: models.Prompt):
+    """删除一个 Prompt 记录。这个函数现在直接接收一个 SQLAlchemy 模型实例 (db_prompt)。"""
+    db.delete(db_prompt)
+    db.commit()
+    # 删除后不需要返回任何东西
+    return None
+```
+
+### **第五步：改造 API 层 (`main.py`) 并实现权限控制**
+
+实现一个**简单但有效**的用户身份验证机制。在真实的生产项目中，通常会使用 OAuth2 和 JWT (JSON Web Tokens) 来做这件事。但为了聚焦在本次作业的核心目标——**权限逻辑**上，我们将采用一种更简单的方式：**通过一个自定义请求头 `X-User-ID` 来指定当前操作的用户**。
+
+这可以让我们清晰地实现“用户A不能修改用户B的数据”这一核心逻辑。
+
+#### 1. 创建获取当前用户的依赖项
+
+首先，需要一个 FastAPI 依赖项，它能从请求头中读取用户 ID，并返回对应的用户数据库对象。
+
+将以下代码添加到 `src/app/main.py` 的顶部区域，紧跟在 `DBSession` 定义的后面。
+
+```python
+# src/app/main.py (添加部分)
+
+from fastapi import Header # 导入 Header
+
+# ... other imports ...
+
+DBSession = Annotated[Session, Depends(lambda: get_db(app))]
+
+# --- 新增：用户身份验证依赖项 ---
+async def get_current_user(x_user_id: Annotated[int, Header()], db: DBSession):
+    """
+    一个简单的依赖项，用于从请求头 X-User-ID 获取用户。
+    在真实应用中，这里应该是复杂的 token 验证逻辑。
+    """
+    user = db.query(models.User).filter(models.User.id == x_user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid user ID")
+    return user
+
+# 定义一个类型别名，方便在路径操作函数中使用
+CurrentUser = Annotated[models.User, Depends(get_current_user)]
+```
+
+#### 2. 添加 User 相关的新端点
+
+现在，我们在 `main.py` 中添加用户注册和查询用户 Prompts 的端点。
+
+```python
+# src/app/main.py (添加部分)
+
+# ... 在文件末尾的 CRUD 端点区域添加 ...
+
+# ==================== 用户端点 ====================
+
+@app.post("/users", response_model=schemas.UserResponse, status_code=201, summary="创建新用户")
+async def create_user_endpoint(user: schemas.UserCreate, db: DBSession):
+    """
+    注册一个新用户。用户名必须是唯一的。
+    """
+    db_user = crud.get_user_by_username(db, username=user.username)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    return crud.create_user(db=db, user=user)
+
+
+@app.get("/users/{user_id}/prompts", response_model=list[schemas.PromptResponse], summary="获取用户的所有提示词")
+async def get_user_prompts_endpoint(user_id: int, db: DBSession):
+    """
+    根据用户ID获取该用户创建的所有提示词列表。
+    """
+    # 检查用户是否存在
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    prompts = crud.get_prompts_by_user(db=db, user_id=user_id)
+    return prompts
+```
+
+#### 3. 为 Prompt 端点添加权限控制
+
+这是最关键的一步。将修改 `create`, `update`, `delete` 端点，让它们使用 `get_current_user` 依赖，并加入权限检查。
+
+```python
+# src/app/main.py (修改部分)
+
+# ... 修改现有的 Prompt CRUD 端点 ...
+
+# 【修改】创建 Prompt 时，所有者自动设为当前用户
+@app.post("/prompts", response_model=schemas.PromptResponse, status_code=201, summary="创建新提示词 (需要认证)")
+async def create_prompt_endpoint(prompt: schemas.PromptCreate, db: DBSession, current_user: CurrentUser):
+    """
+    创建一个新的提示词模板，该提示词将属于当前认证的用户。
+    - **需要** 在请求头中提供 `X-User-ID`。
+    """
+    return crud.create_prompt(db=db, prompt=prompt, user_id=current_user.id)
+
+
+# 【修改】更新 Prompt 时，检查所有权
+@app.put("/prompts/{prompt_id}", response_model=PromptResponse, summary="更新提示词 (需要认证和所有权)")
+async def update_prompt_endpoint(
+    prompt_id: int, 
+    prompt_update: PromptUpdate, 
+    db: DBSession, 
+    current_user: CurrentUser
+):
+    """
+    更新指定ID的提示词
+
+    - **只有提示词的所有者才能更新**。
+    - **需要** 在请求头中提供 `X-User-ID`。
+    - **prompt_id**: 提示词ID
+    - **title**: 新的标题（可选）
+    - **content**: 新的内容（可选）
+    - **category**: 新的分类（可选）
+    """
+    db_prompt = crud.get_prompt(db, prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    # --- 权限检查 ---
+    if db_prompt.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to update this prompt")
+        
+    return crud.update_prompt(db=db, db_prompt=db_prompt, prompt_update=prompt_update)
+
+
+# 【修改】删除 Prompt 时，检查所有权
+@app.delete("/prompts/{prompt_id}", status_code=204, summary="删除提示词 (需要认证和所有权)")
+async def delete_prompt_endpoint(prompt_id: int, db: DBSession, current_user: CurrentUser):
+    """
+    删除指定ID的提示词
+
+    - **prompt_id**: 提示词ID
+    """
+    # 首先调用 CRUD 函数执行删除操作
+    # 【优化】可以检查一下返回值，如果 prompt 不存在，可以返回 404
+    db_prompt = crud.get_prompt(db, prompt_id)
+    if db_prompt is None:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    if db_prompt.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this prompt")
+
+    crud.delete_prompt(db, db_prompt)
+    
+    # 【修复】对于 204 No Content，我们应该返回 None。
+    # FastAPI 会自动处理，生成一个没有 body 的正确 HTTP 响应。
+    return None
+```
+
+**注意**：设计`GET /prompts` 和 `GET /prompts/{id}` 保持原样，允许任何用户查看。
+
+### **第六步：编写新的测试用例**
+
+代码改完了，现在必须用测试来验证新功能和权限逻辑是否正确。
+
+在 `tests/` 目录下创建一个 `test_users_and_auth.py`，并将以下代码粘贴进去。
+
+```python
+# tests/test_users_and_auth.py
+
+import httpx
+import pytest
+from datetime import datetime
+
+BASE_URL = "http://localhost:8002"
+
+# 用于在测试用例之间共享状态
+test_state = {}
+
+def test_1_create_user_alice():
+    """测试创建第一个用户 Alice"""
+    with httpx.Client() as client:
+        user_data = {"username": "alice", "password": "password123"}
+        response = client.post(f"{BASE_URL}/users", json=user_data)
+        assert response.status_code == 201
+        data = response.json()
+        assert data["username"] == "alice"
+        assert "id" in data
+        test_state["user_alice_id"] = data["id"]
+        print(f"\n✅ Created user Alice with ID: {data['id']}")
+
+def test_2_create_user_bob():
+    """测试创建第二个用户 Bob"""
+    with httpx.Client() as client:
+        user_data = {"username": "bob", "password": "password456"}
+        response = client.post(f"{BASE_URL}/users", json=user_data)
+        assert response.status_code == 201
+        data = response.json()
+        assert data["username"] == "bob"
+        test_state["user_bob_id"] = data["id"]
+        print(f"\n✅ Created user Bob with ID: {data['id']}")
+
+def test_3_create_duplicate_user():
+    """测试创建同名用户，应该会失败"""
+    with httpx.Client() as client:
+        user_data = {"username": "alice", "password": "anotherpassword"}
+        response = client.post(f"{BASE_URL}/users", json=user_data)
+        assert response.status_code == 400
+        assert "Username already registered" in response.json()["detail"]
+        print("\n✅ Duplicate user creation failed as expected")
+
+@pytest.mark.depends(on=["test_1_create_user_alice"])
+def test_4_alice_creates_a_prompt():
+    """测试 Alice 创建一个属于她自己的 Prompt"""
+    with httpx.Client() as client:
+        prompt_data = {
+            "title": "Alice's Great Idea",
+            "content": "A prompt created by Alice.",
+            "category": "Personal"
+        }
+        # 关键：在请求头中表明身份
+        headers = {"X-User-ID": str(test_state["user_alice_id"])}
+        response = client.post(f"{BASE_URL}/prompts", json=prompt_data, headers=headers)
+        
+        assert response.status_code == 201
+        data = response.json()
+        assert data["title"] == "Alice's Great Idea"
+        # 验证返回的数据中，所有者信息是 Alice
+        assert data["owner"]["id"] == test_state["user_alice_id"]
+        assert data["owner"]["username"] == "alice"
+        
+        test_state["alice_prompt_id"] = data["id"]
+        print(f"\n✅ Alice created her prompt with ID: {data['id']}")
+
+
+@pytest.mark.depends(on=["test_2_create_user_bob", "test_4_alice_creates_a_prompt"])
+def test_5_bob_cannot_update_alices_prompt():
+    """核心权限测试：Bob 尝试更新 Alice 的 Prompt，应该失败"""
+    with httpx.Client() as client:
+        update_data = {"title": "Bob's Attempted Takeover"}
+        
+        # 关键：Bob 在请求头中表明自己的身份
+        headers = {"X-User-ID": str(test_state["user_bob_id"])}
+        prompt_id = test_state["alice_prompt_id"]
+        
+        response = client.put(f"{BASE_URL}/prompts/{prompt_id}", json=update_data, headers=headers)
+        
+        # 应该返回 403 Forbidden
+        assert response.status_code == 403
+        assert "Not authorized" in response.json()["detail"]
+        print("\n✅ Bob was correctly forbidden from updating Alice's prompt")
+
+@pytest.mark.depends(on=["test_4_alice_creates_a_prompt"])
+def test_6_alice_can_update_her_own_prompt():
+    """核心权限测试：Alice 尝试更新自己的 Prompt，应该成功"""
+    with httpx.Client() as client:
+        update_data = {"title": "Alice's Updated Idea", "category": "Professional"}
+        
+        headers = {"X-User-ID": str(test_state["user_alice_id"])}
+        prompt_id = test_state["alice_prompt_id"]
+        
+        response = client.put(f"{BASE_URL}/prompts/{prompt_id}", json=update_data, headers=headers)
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["title"] == "Alice's Updated Idea"
+        assert data["category"] == "Professional"
+        print("\n✅ Alice successfully updated her own prompt")
+
+@pytest.mark.depends(on=["test_2_create_user_bob", "test_4_alice_creates_a_prompt"])
+def test_7_bob_cannot_delete_alices_prompt():
+    """核心权限测试：Bob 尝试删除 Alice 的 Prompt，应该失败"""
+    with httpx.Client() as client:
+        headers = {"X-User-ID": str(test_state["user_bob_id"])}
+        prompt_id = test_state["alice_prompt_id"]
+        
+        response = client.delete(f"{BASE_URL}/prompts/{prompt_id}", headers=headers)
+        
+        assert response.status_code == 403
+        print("\n✅ Bob was correctly forbidden from deleting Alice's prompt")
+        
+        # 额外验证：Alice 的 prompt 应该还在
+        verify_response = client.get(f"{BASE_URL}/prompts/{prompt_id}")
+        assert verify_response.status_code == 200
+
+@pytest.mark.depends(on=["test_6_alice_can_update_her_own_prompt"])
+def test_8_alice_can_delete_her_own_prompt():
+    """核心权限测试：Alice 删除自己的 Prompt，应该成功"""
+    with httpx.Client() as client:
+        headers = {"X-User-ID": str(test_state["user_alice_id"])}
+        prompt_id = test_state["alice_prompt_id"]
+        
+        response = client.delete(f"{BASE_URL}/prompts/{prompt_id}", headers=headers)
+        assert response.status_code == 204
+        
+        # 额外验证：Prompt 确实被删除了
+        verify_response = client.get(f"{BASE_URL}/prompts/{prompt_id}")
+        assert verify_response.status_code == 404
+        print("\n✅ Alice successfully deleted her own prompt")
+```
+
+### **第七步：重启、测试和提交**
+
+1. **重启 Docker Compose**
+
+    ```bash
+    docker compose up --build
+    ```
+
+    确保 `api-1` 和 `db-1` 都正常启动。
+
+2. **运行测试**
+    打开第二个终端，运行你的测试脚本。`pytest` 会自动发现并运行两个测试文件中的所有测试用例。
+
+    ```bash
+    ./test.sh tests/test_users_and_auth.py
+    ```
+
+    从头运行到这里时应该会看到报错，这是一处“数据库迁移 (Database Migration)”问题， Python 代码（SQLAlchemy）尝试向 `prompts` 表中插入数据，并且想要填充 `user_id` 这个列。但是，数据库 PostgreSQL 返回了一个错误，说：“对不起，在我的 `prompts` 表里，根本就没有 `user_id` 这个列！
+    原因：
+    - **第一次启动**：在你还没有添加用户系统时，你运行了 `docker compose up`。那时的 `models.py` 里 `Prompt` 模型还没有 `user_id` 字段。SQLAlchemy 的 `Base.metadata.create_all(bind=engine)` 指令检查数据库，发现没有 `prompts` 表，于是就根据当时的模型创建了它。
+    - **数据持久化**：你在 `docker-compose.yml` 中配置了 `volumes: - postgres_data:/var/lib/postgresql/data/`。这是一个非常好的实践，它把数据库的数据持久化到了 Docker Volume (`postgres_data`) 中。这意味着即使你停止或重启容器，数据也不会丢失。
+    - **第二次启动**：你修改了 `models.py`，给 `Prompt` 模型添加了 `user_id` 字段，并创建了 `User` 模型。然后你再次运行 `docker compose up --build`。应用启动时，`Base.metadata.create_all(bind=engine)` 再次执行。它检查数据库，发现 `prompts` 表和 `users` 表：
+      - `users` 表不存在 -> 创建它 (✅ 成功)。
+      - `prompts` 表已经存在了 -> `create_all` 不会做任何事 (❌ 这就是问题所在)。
+
+    `create_all` 是一个很“客气”的命令，它只会创建不存在的表，绝不会去修改已经存在的表（比如添加、删除或修改列），因为它害怕会破坏你已有的数据。
+    解决方案：
+    1. `Ctrl+C` 停止服务然后运行 `docker compose down`
+    2. 删除数据卷 (`Volume`)，那个保存了旧数据库结构的 `postgres_data` 卷，`docker volume rm prompt-management-system_postgres_data`
+    3. 重新启动服务 `docker compose up --build` 再次运行测试 `./test.sh tests/test_users_and_auth.py`
+    你应该能看到 `test_users_and_auth.py` 中的所有测试都成功通过！
+
+    关于生产环境的说明 (知识拓展)
+    在真实的生产环境中，绝不能用删除数据卷的方式来更新数据库。那样会丢失所有用户数据！生产环境中，我们会使用专业的数据库迁移工具，比如 Alembic (SQLAlchemy 官方推荐) 或 Flyway。这些工具的工作方式是：
+    - 修改了 models.py。
+    - 运行一个命令，比如 alembic revision --autogenerate -m "Add user_id to prompts table"。
+    - Alembic 会比较你的模型和当前数据库的状态，自动生成一个升级脚本（例如：ALTER TABLE prompts ADD COLUMN user_id INTEGER;）。
+    - 将这个脚本应用到数据库，数据库的结构就被安全地更新了，并且保留了所有现有数据。这个知识点超出了本次作业的基础要求，但理解遇到的这个报错的本质，正是学习数据库迁移重要性的第一步。
+
+3. **提交你的成果**
+    你已经完成了一个非常重要的进阶功能！现在是时候用一次清晰的 Git 提交来记录它了。
+
+    ```bash
+    # 将所有修改过的和新建的文件添加到暂存区
+    git add pyproject.toml src/app/models.py src/app/schemas.py src/app/crud.py src/app/main.py tests/test_users_and_auth.py
+
+    # 提交一个符合规范的 commit
+    git commit -m "feat(auth): implement user system and ownership-based authorization"
+    ```
+
+    - 这个提交信息表示：增加了一个新功能(`feat`)，功能范围是认证(`auth`)，内容是实现了用户系统和基于所有权的授权机制。*
+
+恭喜你！你已经成功地将一个简单的 CRUD 应用升级为了一个支持多用户的、有权限控制的系统。这是从玩具项目迈向真实应用的一大步。
