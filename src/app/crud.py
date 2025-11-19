@@ -5,6 +5,7 @@ from .models import Prompt
 from .schemas import PromptCreate, PromptUpdate
 from typing import List, Optional
 from . import models, schemas  # 导入 models 和 schemas
+from . import llm_client # 导入 llm_client
 import bcrypt
 
 def _hash_password(password: str) -> str:
@@ -137,3 +138,39 @@ def delete_prompt(db: Session, db_prompt: models.Prompt):
     db.commit()
     # 删除后不需要返回任何东西
     return None
+
+# ==================== PromptExecution CRUD (New) ====================
+
+def create_prompt_execution(
+    db: Session,
+    prompt_id: int,
+    user_id: int,
+    request_data: dict,
+    result: llm_client.LLMExecutionResult
+) -> models.PromptExecution:
+    """
+    在数据库中创建一条 Prompt 执行记录。
+    """
+    db_execution = models.PromptExecution(
+        prompt_id=prompt_id,
+        user_id=user_id,
+        request_data=request_data,
+        response_text=result.content,
+        token_usage=result.usage,
+        error_message=result.error
+    )
+    db.add(db_execution)
+    db.commit()
+    db.refresh(db_execution)
+    return db_execution
+
+def get_prompt_executions(db: Session, prompt_id: int, skip: int = 0, limit: int = 100):
+    """
+    获取某个 Prompt 的所有执行历史记录。
+    """
+    return db.query(models.PromptExecution)\
+             .filter(models.PromptExecution.prompt_id == prompt_id)\
+             .order_by(models.PromptExecution.created_at.desc())\
+             .offset(skip)\
+             .limit(limit)\
+             .all()

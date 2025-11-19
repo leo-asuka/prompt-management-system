@@ -1143,8 +1143,7 @@ def test_8_alice_can_delete_her_own_prompt():
 2. [✅]**数据校验层**：为 `Tag` 创建新的 Schema，并且让 `PromptResponse` 能够展示其关联的标签列表。
 3. [✅]**业务逻辑层**：更新 CRUD 函数，需要添加创建和管理标签的函数，以及将标签关联到 Prompt 的函数。
 4. [✅]**API 接口层**：将这些新的业务逻辑通过 API 端点暴露出去。
-5. [✅]**安全**：实现密码哈希存储（这是用户系统最最关键的一点）。
-6. [✅]**测试脚本**：实现测试脚本
+5. [✅]**测试脚本**：实现测试脚本
 
 现在正式开始实现 **选项 2: 标签系统 (+10分)**。
 
@@ -1709,8 +1708,569 @@ def test_7_remove_tag_from_prompt():
 
     ```bash
     # 将所有修改过的和新建的文件添加到暂存区
-    git add pyproject.toml src/app/models.py src/app/schemas.py src/app/crud.py src/app/main.py tests/test_users_and_auth.py
+    git add .
 
     # 提交一个符合规范的 commit
-    git commit -m "feat(auth): implement user system and ownership-based authorization"
+    git commit -m "feat(tags): implement tag system with many-to-many relationship"
+    ```
+
+### 3.目标：实现用户与权限系统
+
+**核心任务分解：**
+
+1. [✅]**安装依赖并更新配置**：将 `openai SDK` 添加到项目中，并配置好 `API` 密钥的管理。
+2. [✅]**创建数据模型与 Schema**：创建一张新表 `prompt_executions` 来记录每一次 `LLM` 调用的历史。
+3. [✅]**创建 LLM 客户端模块 (llm_client.py)**：更新 `CRUD` 函数，需要添加创建和管理标签的函数，以及将标签关联到 `Prompt` 的函数。
+4. [✅]**业务逻辑层**：添加函数来创建和查询 `PromptExecution` 历史记录。
+5. [✅]**更新 API 接口 (main.py)**：将新的业务逻辑通过 `API` 端点暴露出去。这需要两个新的端点。
+6. [✅]**测试脚本**：实现测试脚本。
+
+#### **第一步：安装依赖并更新配置**
+
+需要将 `openai` SDK 添加到项目中，并配置好 API 密钥的管理。
+
+1. **添加 `openai` 依赖**：打开你的 `pyproject.toml` 文件，在 `[project]` -> `dependencies` 列表中添加 `openai`。
+
+   ```toml
+    # pyproject.toml
+    
+    dependencies = [
+        # ... a lot of dependencies
+        "bcrypt>=4.1.3",
+        "openai>=1.35.3", # 添加 OpenAI SDK
+        "Jinja2>=3.1.4",                # 添加 Jinja2 依赖
+    ]
+   ```
+
+2. **更新环境变量模板 (`.env.example`)**：我们需要一个地方来存放 OpenAI 的 API Key。打开 `.env.example`，在文件末尾添加新的配置项。
+
+   ```env
+    # .env.example (在末尾追加)
+    
+    # ----------------
+    # LLM API Keys
+    # ----------------
+    # 生产环境请务必使用安全的密钥管理服务
+    # 用于演示，请在此处填写你的 OpenAI API Key
+    OPENAI_API_KEY="sk-..."
+   ```
+
+3. **更新你的本地环境变量 (`.env`)**：定义一个新的 `Tag` 类。
+   打开你的 `.env` 文件，同样在末尾添加 `OPENAI_API_KEY`，并填入你自己的真实 OpenAI API 密钥。
+
+    ```env
+    # .env (在末尾追加)
+    OPENAI_API_KEY="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ```
+
+    **重要**：如果项目要公开到 GitHub，请再三确认 `.gitignore` 文件中包含了 `.env`，避免密钥泄露。
+4. **更新 Pydantic 配置 (`config.py`)**：
+    让我们的配置模块能够自动加载这个新的环境变量。
+
+    ```python
+    # src/app/config.py
+    
+    class Settings(BaseSettings):
+        # ...
+        POSTGRES_DB: str
+    
+        # --- 新增 ---
+        # OpenAI API Key
+        OPENAI_API_KEY: str
+    
+        @property
+        def database_url(self) -> str:
+            # ...
+    ```
+
+#### **第二步：创建数据模型与 Schema (`models.py` & `schemas.py`)**
+
+新表 `prompt_executions` 来记录每一次 LLM 调用的历史。
+
+1. **更新 `models.py`**
+    - 导入 `JSON` 类型来存储请求和响应的元数据。
+    - 创建 `PromptExecution` 模型，并与 `Prompt` 和 `User` 建立外键关系。
+
+    ```python
+    # src/app/models.py
+    from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table, JSON # 导入 JSON
+    # ... (其他 import)
+    
+    # ... (Tag, User, Prompt 模型保持不变) ...
+    
+    class Prompt(Base):
+        # ... (原有字段) ...
+        owner = relationship("User", back_populates="prompts")
+        tags = relationship("Tag", back_populates="prompts")
+    
+        # --- 新增：与执行历史建立关系 ---
+        executions = relationship("PromptExecution", back_populates="prompt", cascade="all, delete-orphan")
+    
+        def __repr__(self):
+            return f"<Prompt(id={self.id}, title='{self.title}')>"
+    
+    # --- 新增：Prompt 执行历史模型 ---
+    class PromptExecution(Base):
+        """
+        记录每一次 Prompt 执行的历史
+        """
+        __tablename__ = "prompt_executions"
+    
+        id = Column(Integer, primary_key=True, index=True)
+        
+        prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+        user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+        request_data = Column(JSON, nullable=True)  # 存储用于变量替换的字典
+        response_text = Column(Text, nullable=True) # 存储 LLM 返回的文本
+        token_usage = Column(JSON, nullable=True) # 存储 token 使用情况，例如 {"prompt_tokens": 10, "completion_tokens": 20}
+        
+        error_message = Column(Text, nullable=True) # 如果执行出错，记录错误信息
+    
+        created_at = Column(DateTime, default=datetime.utcnow)
+    
+        # 建立关系
+        prompt = relationship("Prompt", back_populates="executions")
+        user = relationship("User") # 简单关系，不需要反向填充
+    
+        def __repr__(self):
+            return f"<PromptExecution(id={self.id}, prompt_id={self.prompt_id})>"
+    ```
+
+2. **更新 `schemas.py`**
+    为新的模型创建对应的 Pydantic Schema。
+
+    ```python
+    # src/app/schemas.py
+    from pydantic import BaseModel, Field, Json # 导入 Json
+    from typing import Optional, List, Dict, Any # 导入 Dict, Any
+    # ...
+    
+    # ... (Tag, User, Prompt Schemas 保持不变) ...
+    
+    # --- 新增：Prompt 执行相关的 Schemas ---
+    
+    class PromptExecuteRequest(BaseModel):
+        """
+        执行 Prompt 时的请求体
+        variables 是一个字典，用于替换 Prompt 内容中的模板变量
+        """
+        variables: Dict[str, Any] = Field({}, description="用于替换提示词模板中变量的键值对")
+
+    class PromptExecutionResponse(BaseModel):
+        """
+        返回 Prompt 执行历史的 Schema
+        """
+        id: int
+        prompt_id: int
+        user_id: int
+        request_data: Optional[Dict[str, Any]] = None
+        response_text: Optional[str] = None
+        token_usage: Optional[Dict[str, int]] = None
+        error_message: Optional[str] = None
+        created_at: datetime
+    
+        class Config:
+            from_attributes = True
+
+    ```
+
+#### **第三步：创建 LLM 客户端模块 (`llm_client.py`)**
+
+这是与外部服务交互的核心逻辑。我们将所有 OpenAI 相关的代码都封装在这个模块里，保持其他部分的干净。
+
+在 `src/app/` 目录下创建一个新文件 `llm_client.py`。
+
+```python
+# src/app/llm_client.py
+
+from openai import OpenAI, APITimeoutError, APIConnectionError, RateLimitError
+from jinja2 import Template # 使用 Jinja2 来做模板替换，比 str.format 更安全、更强大
+from .config import settings
+
+# 1. 初始化 OpenAI 客户端
+# 客户端在模块加载时被实例化一次，这是一种高效的单例模式
+try:
+    client = OpenAI(
+        api_key=settings.OPENAI_API_KEY,
+        timeout=20.0,  # 设置默认超时时间
+    )
+except Exception as e:
+    # 如果初始化失败 (例如，没有设置 API Key)，则将 client 设为 None
+    client = None
+    print(f"--- 警告: OpenAI 客户端初始化失败: {e} ---")
+    print("--- LLM API 集成功能将不可用 ---")
+
+
+class LLMExecutionResult:
+    """封装 LLM 执行结果的数据类"""
+    def __init__(self, success: bool, content: str = None, usage: dict = None, error: str = None):
+        self.success = success
+        self.content = content
+        self.usage = usage
+        self.error = error
+
+def execute_prompt(prompt_content: str, variables: dict) -> LLMExecutionResult:
+    """
+    执行一个 Prompt，包括变量替换和调用 LLM API
+    :param prompt_content: 包含模板变量的 Prompt 字符串 (e.g., "你好, {{name}}")
+    :param variables: 用于替换模板变量的字典 (e.g., {"name": "Alice"})
+    :return: 一个 LLMExecutionResult 实例
+    """
+    if not client:
+        return LLMExecutionResult(success=False, error="OpenAI client is not initialized.")
+
+    # 2. 使用 Jinja2 进行安全的变量替换
+    try:
+        template = Template(prompt_content)
+        final_prompt = template.render(variables)
+    except Exception as e:
+        return LLMExecutionResult(success=False, error=f"Template rendering failed: {e}")
+
+    # 3. 调用 OpenAI API 并处理潜在的错误
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": final_prompt,
+                }
+            ],
+            model="gpt-3.5-turbo", # 或者使用更新的模型
+        )
+        
+        content = chat_completion.choices[0].message.content
+        usage_dict = chat_completion.usage.model_dump() # Pydantic v2 使用 model_dump()
+
+        return LLMExecutionResult(success=True, content=content, usage=usage_dict)
+
+    except APITimeoutError:
+        return LLMExecutionResult(success=False, error="OpenAI API request timed out.")
+    except APIConnectionError:
+        return LLMExecutionResult(success=False, error="Failed to connect to OpenAI API.")
+    except RateLimitError:
+        return LLMExecutionResult(success=False, error="OpenAI API rate limit exceeded.")
+    except Exception as e:
+        return LLMExecutionResult(success=False, error=f"An unexpected error occurred: {e}")
+
+```
+
+#### **第四步：更新 `crud.py`**
+
+在 `src/app/crud.py` 文件中，添加以下新函数。你可以把它们放在一个专门的 `PromptExecution` CRUD 区域。
+
+```python
+# src/app/crud.py
+
+from . import llm_client # 导入 llm_client
+
+# ... (其他 import) ...
+
+# ... (User, Tag, Prompt CRUD functions) ...
+
+# ==================== PromptExecution CRUD (New) ====================
+
+def create_prompt_execution(
+    db: Session,
+    prompt_id: int,
+    user_id: int,
+    request_data: dict,
+    result: llm_client.LLMExecutionResult
+) -> models.PromptExecution:
+    """
+    在数据库中创建一条 Prompt 执行记录。
+    """
+    db_execution = models.PromptExecution(
+        prompt_id=prompt_id,
+        user_id=user_id,
+        request_data=request_data,
+        response_text=result.content,
+        token_usage=result.usage,
+        error_message=result.error
+    )
+    db.add(db_execution)
+    db.commit()
+    db.refresh(db_execution)
+    return db_execution
+
+def get_prompt_executions(db: Session, prompt_id: int, skip: int = 0, limit: int = 100):
+    """
+    获取某个 Prompt 的所有执行历史记录。
+    """
+    return db.query(models.PromptExecution)\
+             .filter(models.PromptExecution.prompt_id == prompt_id)\
+             .order_by(models.PromptExecution.created_at.desc())\
+             .offset(skip)\
+             .limit(limit)\
+             .all()
+
+```
+
+#### **第五步：更新 API 接口 (`main.py`)**
+
+将新的业务逻辑通过 API 端点暴露出去。这需要两个新的端点。
+
+在 `src/app/main.py` 文件中，添加以下新端点。一个好的位置是在 `Prompt-Tag` 关联端点和 `Prompt CRUD` 端点之间。
+
+```python
+# src/app/main.py
+
+# ... (其他 import) ...
+from .llm_client import execute_prompt
+from .schemas import PromptExecuteRequest, PromptExecutionResponse # 导入新的 Schema
+
+# ... (app, DBSession, CurrentUser, Health Checks, Tag endpoints, Prompt-Tag endpoints) ...
+
+
+# ==================== Prompt Execution Endpoints (New) ====================
+
+@app.post("/prompts/{prompt_id}/execute", response_model=PromptExecutionResponse, summary="执行提示词")
+async def execute_prompt_endpoint(
+    prompt_id: int,
+    execute_request: PromptExecuteRequest,
+    db: DBSession,
+    current_user: CurrentUser
+):
+    """
+    执行一个提示词模板：
+    1. 使用提供的变量替换模板内容。
+    2. 调用 LLM API (例如 OpenAI) 获取结果。
+    3. 将执行过程和结果存入历史记录。
+    
+    - **需要认证** (`X-User-ID` 请求头)。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+        
+    # 调用 llm_client 中的执行函数
+    llm_result = execute_prompt(
+        prompt_content=db_prompt.content,
+        variables=execute_request.variables
+    )
+    
+    # 无论成功与否，都创建一条执行记录
+    execution_record = crud.create_prompt_execution(
+        db=db,
+        prompt_id=prompt_id,
+        user_id=current_user.id,
+        request_data=execute_request.variables,
+        result=llm_result
+    )
+
+    # 如果 LLM 调用失败，向客户端返回一个服务端错误
+    if not llm_result.success:
+        raise HTTPException(status_code=500, detail=llm_result.error)
+
+    return execution_record
+
+
+@app.get("/prompts/{prompt_id}/executions", response_model=List[PromptExecutionResponse], summary="获取提示词执行历史")
+async def list_prompt_executions_endpoint(
+    prompt_id: int,
+    db: DBSession,
+    current_user: CurrentUser, # 添加认证，确保用户能看到历史
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200)
+):
+    """
+    获取指定提示词的所有执行历史记录。
+    - 任何人都可以查看任何 Prompt 的执行历史（也可以添加权限，只让所有者查看）。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+        
+    executions = crud.get_prompt_executions(db, prompt_id=prompt_id, skip=skip, limit=limit)
+    return executions
+
+
+# ... (Prompt CRUD endpoints, User endpoints, etc.) ...
+```
+
+#### **第六步：编写模拟测试用例 (`test_llm_integration.py`)和提交**
+
+将模拟 `llm_client.execute_prompt` 函数的行为，让它返回预设的成功或失败结果，从而在不实际调用 OpenAI 的情况下测试我们的 API 端点。
+
+在你的项目根目录 (`prompt-management-system/`)创建一个名为 `pytest.ini` 的新文件。
+
+```Ini
+[pytest]
+pythonpath = . src
+```
+
+在 `tests/` 目录下创建一个新文件 `test_llm_integration.py`。
+
+```python
+# tests/test_llm_integration.py
+
+import httpx
+import pytest
+from src.app import llm_client # 直接导入模块以进行 mock
+
+# 共享状态
+test_state = {}
+
+# === 辅助函数，与 test_tags.py 中的类似 ===
+def create_user_for_llm(username, password):
+    with httpx.Client() as client:
+        response = client.post("http://localhost:8002/users", json={"username": username, "password": password})
+        assert response.status_code == 201
+        return response.json()
+
+def create_prompt_for_llm(user_id, title, content):
+    with httpx.Client() as client:
+        headers = {"X-User-ID": str(user_id)}
+        response = client.post(
+            "http://localhost:8002/prompts",
+            json={"title": title, "content": content},
+            headers=headers
+        )
+        assert response.status_code == 201
+        return response.json()
+
+# === 测试设置 ===
+@pytest.fixture(scope="module", autouse=True)
+def setup_for_llm_tests():
+    print("\n--- Setting up data for LLM integration tests ---")
+    user_eva = create_user_for_llm("eva", "pass123")
+    test_state["user_eva_id"] = user_eva["id"]
+    
+    prompt_template = "Generate a short marketing slogan for a product named {{product_name}}."
+    prompt = create_prompt_for_llm(user_eva["id"], "Slogan Generator", prompt_template)
+    test_state["prompt_id"] = prompt["id"]
+    print("--- LLM test setup complete ---")
+
+
+# === 测试用例 ===
+
+def test_1_successful_prompt_execution(monkeypatch):
+    """
+    测试成功的 Prompt 执行流程，通过 monkeypatch 模拟 LLM 客户端
+    """
+    # 1. 定义一个模拟函数，它将替换掉真实的 llm_client.execute_prompt
+    def mock_execute_prompt(prompt_content: str, variables: dict):
+        # 模拟成功的返回结果
+        mock_result = llm_client.LLMExecutionResult(
+            success=True,
+            content="Sparkle a new day with Sparkle.",
+            usage={"prompt_tokens": 15, "completion_tokens": 8, "total_tokens": 23}
+        )
+        return mock_result
+
+    # 2. 使用 monkeypatch 将真实函数替换为我们的模拟函数
+    monkeypatch.setattr(llm_client, "execute_prompt", mock_execute_prompt)
+
+    # 3. 正常调用 API 端点
+    user_id = test_state["user_eva_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(user_id)}
+    payload = {"variables": {"product_name": "Sparkle"}}
+
+    with httpx.Client() as client:
+        response = client.post(f"http://localhost:8002/prompts/{prompt_id}/execute", json=payload, headers=headers)
+    
+    # 4. 断言结果
+    assert response.status_code == 200
+    data = response.json()
+    assert data["response_text"] == "Sparkle a new day with Sparkle."
+    assert data["token_usage"]["total_tokens"] == 23
+    assert data["error_message"] is None
+    assert data["prompt_id"] == prompt_id
+    assert data["user_id"] == user_id
+    test_state["execution_id"] = data["id"]
+    
+    print("\n✅ Successful prompt execution (mocked) test passed")
+
+def test_2_failed_prompt_execution(monkeypatch):
+    """
+    测试失败的 Prompt 执行流程 (例如 API 超时)
+    """
+    # 1. 定义一个模拟失败场景的函数
+    def mock_failed_execute(prompt_content: str, variables: dict):
+        return llm_client.LLMExecutionResult(success=False, error="OpenAI API request timed out.")
+
+    # 2. 替换真实函数
+    monkeypatch.setattr(llm_client, "execute_prompt", mock_failed_execute)
+
+    # 3. 调用 API
+    user_id = test_state["user_eva_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(user_id)}
+    payload = {"variables": {"product_name": "Gloom"}}
+    
+    with httpx.Client() as client:
+        response = client.post(f"http://localhost:8002/prompts/{prompt_id}/execute", json=payload, headers=headers)
+
+    # 4. 断言：API 应该返回 500 错误，但数据库中应有记录
+    assert response.status_code == 500
+    assert "timed out" in response.json()["detail"]
+
+    # 5. 验证数据库中确实创建了一条失败的记录
+    with httpx.Client() as client:
+        history_response = client.get(f"http://localhost:8002/prompts/{prompt_id}/executions", headers=headers)
+        assert history_response.status_code == 200
+        history_data = history_response.json()
+        
+        # 查找那条失败的记录
+        failed_record = next((r for r in history_data if r["error_message"] is not None), None)
+        assert failed_record is not None
+        assert "timed out" in failed_record["error_message"]
+        assert failed_record["response_text"] is None
+        
+    print("\n✅ Failed prompt execution (mocked) test passed")
+
+
+@pytest.mark.depends(on=["test_1_successful_prompt_execution"])
+def test_3_list_execution_history():
+    """
+    测试获取执行历史记录的端点
+    """
+    user_id = test_state["user_eva_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(user_id)}
+    
+    with httpx.Client() as client:
+        response = client.get(f"http://localhost:8002/prompts/{prompt_id}/executions", headers=headers)
+        
+    assert response.status_code == 200
+    data = response.json()
+    
+    # 历史记录中应该至少有 test_1 和 test_2 创建的两条记录
+    assert len(data) >= 2
+    
+    # 验证第一条成功的记录存在
+    successful_record_ids = [r["id"] for r in data if r["error_message"] is None]
+    assert test_state["execution_id"] in successful_record_ids
+    
+    print("\n✅ List execution history test passed")
+
+```
+
+1. **重启并清空数据库**
+    由于你再次修改了数据库模型，必须执行此步骤！
+
+    ```bash
+    # 在第一个终端
+    docker compose down -v
+    docker compose up --build
+    ```
+
+    **注意**：观察日志，确保你没有看到 `OpenAI 客户端初始化失败` 的警告。如果你看到了，请检查 `.env` 文件中的 `OPENAI_API_KEY` 是否正确设置。
+
+2. **运行所有测试**
+    打开第二个终端，运行测试脚本。
+
+    ```bash
+    ./test.sh tests/test_llm_integration.py
+    ```
+
+    所有测试（包括之前的用户、标签测试，以及新的 LLM 集成测试）都应该通过。
+
+3. **提交你的成果**
+    你已经完成了这个项目中最复杂、最核心的进阶功能！
+
+    ```bash
+    # git add .
+    git commit -m "feat(llm): implement prompt execution with OpenAI and history tracking"
     ```

@@ -8,7 +8,8 @@ from typing import Annotated, Optional, List
 from . import models
 from .database import lifespan, get_db
 from . import models, crud, schemas
-from .schemas import PromptCreate, PromptUpdate, PromptResponse, PromptList, UserResponse, UserCreate
+from .llm_client import execute_prompt
+from .schemas import PromptCreate, PromptUpdate, PromptResponse, PromptList, UserResponse, UserCreate, PromptExecuteRequest, PromptExecutionResponse
 from .config import settings
 
 # 确保在 FastAPI 启动前，数据库表已经通过 Base.metadata 注册
@@ -17,7 +18,7 @@ from .config import settings
 app = FastAPI(
     title="LLM Prompt Management System",
     description="一个用于管理 LLM 提示词的 API 系统",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan
 )
 
@@ -75,7 +76,69 @@ async def db_health_check(db: DBSession):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
 
-# ==================== Tag Endpoints (New) ====================
+# ==================== Prompt Execution Endpoints (New) ====================
+
+@app.post("/prompts/{prompt_id}/execute", response_model=PromptExecutionResponse, summary="执行提示词")
+async def execute_prompt_endpoint(
+    prompt_id: int,
+    execute_request: PromptExecuteRequest,
+    db: DBSession,
+    current_user: CurrentUser
+):
+    """
+    执行一个提示词模板：
+    1. 使用提供的变量替换模板内容。
+    2. 调用 LLM API (例如 OpenAI) 获取结果。
+    3. 将执行过程和结果存入历史记录。
+    
+    - **需要认证** (`X-User-ID` 请求头)。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+        
+    # 调用 llm_client 中的执行函数
+    llm_result = execute_prompt(
+        prompt_content=db_prompt.content,
+        variables=execute_request.variables
+    )
+    
+    # 无论成功与否，都创建一条执行记录
+    execution_record = crud.create_prompt_execution(
+        db=db,
+        prompt_id=prompt_id,
+        user_id=current_user.id,
+        request_data=execute_request.variables,
+        result=llm_result
+    )
+
+    # 如果 LLM 调用失败，向客户端返回一个服务端错误
+    if not llm_result.success:
+        raise HTTPException(status_code=500, detail=llm_result.error)
+
+    return execution_record
+
+
+@app.get("/prompts/{prompt_id}/executions", response_model=List[PromptExecutionResponse], summary="获取提示词执行历史")
+async def list_prompt_executions_endpoint(
+    prompt_id: int,
+    db: DBSession,
+    current_user: CurrentUser, # 添加认证，确保用户能看到历史
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200)
+):
+    """
+    获取指定提示词的所有执行历史记录。
+    - 任何人都可以查看任何 Prompt 的执行历史（也可以添加权限，只让所有者查看）。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+        
+    executions = crud.get_prompt_executions(db, prompt_id=prompt_id, skip=skip, limit=limit)
+    return executions
+
+# ==================== Tag Endpoints ====================
 
 @app.post("/tags", response_model=schemas.TagResponse, status_code=201, summary="创建新标签")
 async def create_tag_endpoint(tag: schemas.TagCreate, db: DBSession, current_user: CurrentUser):

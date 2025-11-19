@@ -1,5 +1,5 @@
 # src/app/models.py
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table, JSON
 from sqlalchemy.orm import relationship  # 导入 relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
@@ -80,12 +80,43 @@ class Prompt(Base):
     # 'owner' 是一个虚拟字段，可以让我们通过 prompt.owner 访问创建者 User 对象
     owner = relationship("User", back_populates="prompts")
 
-    # --- 新增：与 Tag 的多对多关系 ---
+    # 与 Tag 的多对多关系
     tags = relationship(
         "Tag",
         secondary=prompt_tag_association,
         back_populates="prompts"
     )
 
+    owner = relationship("User", back_populates="prompts")
+
+    executions = relationship("PromptExecution", back_populates="prompt", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<Prompt(id={self.id}, title='{self.title}', category='{self.category}')>"
+    
+# Prompt 执行历史模型
+class PromptExecution(Base):
+    """
+    记录每一次 Prompt 执行的历史
+    """
+    __tablename__ = "prompt_executions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    request_data = Column(JSON, nullable=True)  # 存储用于变量替换的字典
+    response_text = Column(Text, nullable=True) # 存储 LLM 返回的文本
+    token_usage = Column(JSON, nullable=True) # 存储 token 使用情况，例如 {"prompt_tokens": 10, "completion_tokens": 20}
+    
+    error_message = Column(Text, nullable=True) # 如果执行出错，记录错误信息
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # 建立关系
+    prompt = relationship("Prompt", back_populates="executions")
+    user = relationship("User") # 简单关系，不需要反向填充
+
+    def __repr__(self):
+        return f"<PromptExecution(id={self.id}, prompt_id={self.prompt_id})>"

@@ -1,6 +1,6 @@
 # src/app/schemas.py
-from pydantic import BaseModel, Field
-from typing import Optional, List
+from pydantic import BaseModel, Field, Json
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 # ==================== Tag Schemas ====================
@@ -63,7 +63,7 @@ class PromptResponse(PromptBase):
     owner: UserResponse  # 嵌套 UserResponse Schema
     # --- 新增：在返回 Prompt 时，包含其所有标签 ---
     tags: List[TagResponse] = []
-    
+
     # Pydantic V2 的配置项
     class Config:
         # from_attributes = True 告诉 Pydantic 模型可以从 ORM 对象（数据库模型实例）中读取数据。
@@ -75,3 +75,31 @@ class PromptList(BaseModel):
     """提示词列表响应"""
     total: int
     prompts: list[PromptResponse]
+
+# Prompt 执行相关的 Schemas
+
+class PromptExecuteRequest(BaseModel):
+    """
+    执行 Prompt 时的请求体
+    variables 是一个字典，用于替换 Prompt 内容中的模板变量
+    """
+    variables: Dict[str, Any] = Field({}, description="用于替换提示词模板中变量的键值对")
+
+class PromptExecutionResponse(BaseModel):
+    """
+    返回 Prompt 执行历史的 Schema
+    """
+    id: int
+    prompt_id: int
+    user_id: int
+    request_data: Optional[Dict[str, Any]] = None
+    response_text: Optional[str] = None
+
+    # 修改这一行
+    # 从: token_usage: Optional[Dict[str, int]] = None
+    token_usage: Optional[Dict[str, Any]] = None # 或者 Optional[dict]
+    error_message: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
