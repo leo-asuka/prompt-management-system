@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # OpenAI API Key
     OPENAI_API_KEY: str
 
+    # --- 新增 ---
+    REDIS_URL: str = "redis://localhost:6379/0" # 默认值，防止本地运行报错
+
     @property
     def database_url(self) -> str:
         """

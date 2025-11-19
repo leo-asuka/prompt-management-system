@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
-from . import models, schemas, llm_client
+from . import models, schemas, llm_client, cache
 from .models import Prompt
 import bcrypt
 
@@ -167,10 +167,16 @@ def get_prompt(db: Session, prompt_id: int):
     """根据 ID 查询单个 Prompt。.first() 表示只返回第一条匹配的记录，如果没有找到则返回 None。"""
     return db.query(Prompt).filter(Prompt.id == prompt_id).first()
 
+# 1. 优化 get_prompt_with_average_rating (读操作)
 def get_prompt_with_average_rating(db: Session, prompt_id: int):
-    """获取单个 Prompt，并动态计算其平均分。"""
+    """获取单个 Prompt，并动态计算其平均分，带缓存支持。"""
+    # --- 步骤 1: 尝试从缓存读取 ---
+    cached_prompt = cache.get_prompt_cache(prompt_id)
+    if cached_prompt:
+        # 如果命中缓存，直接返回，不再连接数据库
+        return cached_prompt
+    # --- 步骤 2: 缓存未命中，查询数据库 ---
     avg_rating = func.avg(models.Rating.score).label("average_rating")
-    
     result = db.query(models.Prompt, avg_rating)\
                .outerjoin(models.Rating)\
                .filter(models.Prompt.id == prompt_id)\
@@ -180,11 +186,18 @@ def get_prompt_with_average_rating(db: Session, prompt_id: int):
     if result:
         prompt, rating = result
         prompt.average_rating = rating if rating is not None else 0.0
+        # --- 步骤 3: 写入缓存 ---
+        # 我们需要先将其转换为 Pydantic Schema，因为我们的缓存函数只接受 Schema
+        # 注意：这里需要手动构建一下 schema 对象，或者利用 from_attributes
+        prompt_schema = schemas.PromptResponse.model_validate(prompt)
+        cache.set_prompt_cache(prompt_schema)
+        
         return prompt
     return None
 
+# 2. 优化 update_prompt (写操作 - 缓存失效)
 def update_prompt(db: Session, db_prompt: models.Prompt, prompt_update: schemas.PromptUpdate):
-    """更新一个已存在的 Prompt 记录。这个函数现在直接接收一个 SQLAlchemy 模型实例 (db_prompt)，而不是 prompt_id。更新 Prompt，并自动创建新版本"""
+    """更新一个已存在的 Prompt 记录。这个函数现在直接接收一个 SQLAlchemy 模型实例 (db_prompt)，而不是 prompt_id。更新 Prompt，并自动创建新版本，并清除缓存"""
     # 1. 更新主表数据
     update_data = prompt_update.model_dump(exclude_unset=True)
     # 如果没有实际数据更新，直接返回
@@ -214,6 +227,9 @@ def update_prompt(db: Session, db_prompt: models.Prompt, prompt_update: schemas.
     db.add(new_version)
     db.commit()
     db.refresh(db_prompt)
+
+    # 清除缓存，因为数据变了，旧的缓存已经脏了，必须删除
+    cache.delete_prompt_cache(db_prompt.id)
     return db_prompt
 
 def get_prompt_versions(db: Session, prompt_id: int):
@@ -250,11 +266,16 @@ def rollback_prompt(db: Session, db_prompt: models.Prompt, version_number: int):
     # 复用 update_prompt 逻辑，它会自动处理“创建新版本”的逻辑
     return update_prompt(db, db_prompt, prompt_update)
 
+# 3. 优化 delete_prompt (删操作 - 缓存失效)
 def delete_prompt(db: Session, db_prompt: models.Prompt):
-    """删除一个 Prompt 记录。这个函数现在直接接收一个 SQLAlchemy 模型实例 (db_prompt)。"""
+    """删除 Prompt 并清除缓存"""
+    prompt_id = db_prompt.id # 先记下 ID
     db.delete(db_prompt)
     db.commit()
-    # 删除后不需要返回任何东西
+    
+    # --- 清除缓存 ---
+    cache.delete_prompt_cache(prompt_id)
+    
     return None
 
 # ==================== PromptExecution CRUD (New) ====================

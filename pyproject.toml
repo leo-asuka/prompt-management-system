@@ -15,6 +15,7 @@ dependencies = [
     "passlib[bcrypt]>=1.7.4",
     "openai>=1.35.3",               # 添加 OpenAI SDK
     "Jinja2>=3.1.4",                # 添加 Jinja2 依赖
+    "redis>=5.0.0",                 # 添加 `redis` 客户端库。
 ]
 requires-python = ">=3.11"
 readme = "README.md"

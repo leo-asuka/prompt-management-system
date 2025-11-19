@@ -41,7 +41,8 @@ class Rating(Base):
     __tablename__ = "ratings"
     
     id = Column(Integer, primary_key=True, index=True)
-    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    # 频繁用于 group by prompt_id
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     score = Column(Integer, nullable=False) # 例如：1 到 5 分
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -118,8 +119,10 @@ class Prompt(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # 新增字段：外键，关联到 users 表的 id 字段
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # 外键，关联到 users 表的 id 字段
+    # user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # 建议：显式添加 index=True，虽然有些数据库会自动对外键建索引，但显式更好
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True) 
 
     # 建立与 User 模型的关系
     # 'owner' 是一个虚拟字段，可以让我们通过 prompt.owner 访问创建者 User 对象

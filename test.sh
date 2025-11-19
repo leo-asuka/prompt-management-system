@@ -23,7 +23,6 @@ export PYTEST_OPTS="-v -s --verbose"
 
 echo "--- 🚀 Starting API tests against running Docker container ---"
 echo "--- Target URL: http://localhost:8002 ---"
-echo ""
 
 # 运行 pytest
 # pytest 会自动发现 tests/ 目录下的 test_*.py 文件
