@@ -2265,7 +2265,18 @@ def test_3_list_execution_history():
     ./test.sh tests/test_llm_integration.py
     ```
 
-    所有测试（包括之前的用户、标签测试，以及新的 LLM 集成测试）都应该通过。
+    ```bash
+    ✅ Real LLM call successful. Response: 'Arr, matey, the core of relativity be that the laws o’ physics be the same for all sailors, no matter how fast their ship be sailin’!'
+    ✅ Token usage recorded: {'completion_tokens': 36, 'prompt_tokens': 32, 'total_tokens': 68, 'completion_tokens_details': {'accepted_prediction_tokens': None, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': None}, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}}
+    PASSED
+    tests/test_llm_integration.py::test_2_list_real_execution_history
+    ✅ List real execution history test passed
+    PASSED
+
+    ==================================================== 2 passed in 8.63s ===================================================== 
+
+    --- ✅ All tests passed successfully! ---
+    ```
 
 3. **提交你的成果**
     你已经完成了这个项目中最复杂、最核心的进阶功能！
