@@ -1,13 +1,13 @@
 # src/app/main.py
-from fastapi import FastAPI, Depends, HTTPException, Query, Header # 导入 Header
+from fastapi import FastAPI, Depends, HTTPException, Query, Header, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, text, func
-from sqlalchemy.exc import OperationalError
-from typing import Annotated
+from sqlalchemy import text, func
+from sqlalchemy.exc import OperationalError, IntegrityError
+from typing import Annotated, Optional, List
 from . import models
 from .database import lifespan, get_db
-from . import crud
+from . import models, crud, schemas
 from .schemas import PromptCreate, PromptUpdate, PromptResponse, PromptList, UserResponse, UserCreate
 from .config import settings
 
@@ -22,8 +22,9 @@ app = FastAPI(
 )
 
 DBSession = Annotated[Session, Depends(get_db)]
+# CurrentUser = Annotated[models.User, Depends(crud.get_current_user)] # 使用 crud 中的函数
 
-# --- 新增：用户身份验证依赖项 ---
+# 用户身份验证依赖项
 async def get_current_user(x_user_id: Annotated[int, Header()], db: DBSession):
     """
     一个简单的依赖项，用于从请求头 X-User-ID 获取用户。
@@ -74,6 +75,76 @@ async def db_health_check(db: DBSession):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
 
+# ==================== Tag Endpoints (New) ====================
+
+@app.post("/tags", response_model=schemas.TagResponse, status_code=201, summary="创建新标签")
+async def create_tag_endpoint(tag: schemas.TagCreate, db: DBSession, current_user: CurrentUser):
+    """
+    创建一个新的标签。标签名必须是唯一的。
+    需要认证。
+    """
+    db_tag = crud.get_tag_by_name(db, name=tag.name)
+    if db_tag:
+        raise HTTPException(status_code=400, detail="Tag with this name already exists")
+    return crud.create_tag(db=db, tag=tag)
+
+@app.get("/tags", response_model=List[schemas.TagResponse], summary="获取所有标签")
+async def list_tags_endpoint(db: DBSession, skip: int = 0, limit: int = 100):
+    """
+    获取所有已创建的标签列表。
+    """
+    tags = crud.get_tags(db, skip=skip, limit=limit)
+    return tags
+
+# ==================== Prompt-Tag Association Endpoints (New) ====================
+
+@app.post("/prompts/{prompt_id}/tags/{tag_id}", response_model=schemas.PromptResponse, summary="为提示词添加标签")
+async def add_tag_to_prompt_endpoint(
+    prompt_id: int,
+    tag_id: int,
+    db: DBSession,
+    current_user: CurrentUser
+):
+    """
+    为一个提示词添加一个标签。
+    - 只有提示词的所有者才能操作。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    if db_prompt.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this prompt")
+    
+    db_tag = crud.get_tag(db, tag_id=tag_id)
+    if not db_tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+        
+    return crud.add_tag_to_prompt(db=db, db_prompt=db_prompt, db_tag=db_tag)
+
+
+@app.delete("/prompts/{prompt_id}/tags/{tag_id}", response_model=schemas.PromptResponse, summary="从提示词移除标签")
+async def remove_tag_from_prompt_endpoint(
+    prompt_id: int,
+    tag_id: int,
+    db: DBSession,
+    current_user: CurrentUser
+):
+    """
+    从一个提示词移除一个标签。
+    - 只有提示词的所有者才能操作。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    if db_prompt.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this prompt")
+        
+    db_tag = crud.get_tag(db, tag_id=tag_id)
+    if not db_tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+        
+    return crud.remove_tag_from_prompt(db=db, db_prompt=db_prompt, db_tag=db_tag)
+
 # ==================== 提示词 CRUD 端点 ====================
 
 @app.post("/prompts", response_model=PromptResponse, status_code=201, summary="创建新提示词 (需要认证)")
@@ -90,11 +161,12 @@ async def create_prompt_endpoint(prompt: PromptCreate, db: DBSession, current_us
     """
     return crud.create_prompt(db=db, prompt=prompt, user_id=current_user.id)
 
-@app.get("/prompts", response_model=PromptList, summary="列出所有提示词")
+@app.get("/prompts", response_model=schemas.PromptList, summary="列出所有提示词 (支持按标签筛选)")
 async def list_prompts_endpoint(
     db: DBSession,
-    skip: int = Query(0, ge=0, description="跳过的记录数"),
-    limit: int = Query(100, ge=1, le=100, description="返回的最大记录数")
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    tags: Optional[str] = Query(None, description="用逗号分隔的标签名, e.g., 'marketing,sales'")
 ):
     """
     获取所有提示词列表（支持分页）
@@ -102,10 +174,9 @@ async def list_prompts_endpoint(
     - **skip**: 跳过的记录数（默认0）
     - **limit**: 返回的最大记录数（默认100，最大100）
     """
-    prompts = crud.get_prompts(db, skip, limit)
-    # 【优化点】计算数据库中 prompt 的总数，用于分页
-    total_count = db.query(func.count(models.Prompt.id)).scalar()
-    return {"total": total_count, "prompts": prompts}
+    tag_list = tags.split(',') if tags else None
+    prompts, total = crud.get_prompts(db, skip=skip, limit=limit, tags=tag_list)
+    return {"total": total, "prompts": prompts}
 
 @app.get("/prompts/{prompt_id}", response_model=PromptResponse, summary="获取特定提示词")
 async def get_prompt_endpoint(prompt_id: int, db: DBSession):

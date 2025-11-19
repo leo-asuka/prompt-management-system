@@ -613,11 +613,12 @@ htmlcov/
 
 **核心任务分解：**
 
-1. [ ]**数据模型层**：创建 `User` 模型，并在 `Prompt` 模型中添加外键关联。
-2. [ ]**数据校验层**：为 User 创建 Pydantic Schemas。
-3. [ ]**业务逻辑层**：更新 CRUD 函数，使其能够处理用户关联。
-4. [ ]**API 接口层**：创建用户注册端点，并修改 Prompt 相关端点以实现权限控制。
-5. [ ]**安全**：实现密码哈希存储（这是用户系统最最关键的一点）。
+1. [✅]**数据模型层**：创建 `User` 模型，并在 `Prompt` 模型中添加外键关联。
+2. [✅]**数据校验层**：为 User 创建 Pydantic Schemas。
+3. [✅]**业务逻辑层**：更新 CRUD 函数，使其能够处理用户关联。
+4. [✅]**API 接口层**：创建用户注册端点，并修改 Prompt 相关端点以实现权限控制。
+5. [✅]**安全**：实现密码哈希存储（这是用户系统最最关键的一点）。
+6. [✅]**测试脚本**：实现测试脚本
 
 #### **第一步：安装密码处理库**
 
@@ -1111,7 +1112,7 @@ def test_8_alice_can_delete_her_own_prompt():
 
     `create_all` 是一个很“客气”的命令，它只会创建不存在的表，绝不会去修改已经存在的表（比如添加、删除或修改列），因为它害怕会破坏你已有的数据。
     解决方案：
-    1. `Ctrl+C` 停止服务然后运行 `docker compose down`
+    1. `Ctrl+C` 停止服务然后运行 `docker compose down -v`
     2. 删除数据卷 (`Volume`)，那个保存了旧数据库结构的 `postgres_data` 卷，`docker volume rm prompt-management-system_postgres_data`
     3. 重新启动服务 `docker compose up --build` 再次运行测试 `./test.sh tests/test_users_and_auth.py`
     你应该能看到 `test_users_and_auth.py` 中的所有测试都成功通过！
@@ -1123,7 +1124,7 @@ def test_8_alice_can_delete_her_own_prompt():
     - Alembic 会比较你的模型和当前数据库的状态，自动生成一个升级脚本（例如：ALTER TABLE prompts ADD COLUMN user_id INTEGER;）。
     - 将这个脚本应用到数据库，数据库的结构就被安全地更新了，并且保留了所有现有数据。这个知识点超出了本次作业的基础要求，但理解遇到的这个报错的本质，正是学习数据库迁移重要性的第一步。
 
-3. **提交你的成果**
+3. **提交成果**
     完成了一个进阶功能，现在用一次清晰的 Git 提交来记录它。
 
     ```bash
@@ -1135,3 +1136,581 @@ def test_8_alice_can_delete_her_own_prompt():
     ```
 
 ### 2.目标：实现用户与权限系统
+
+**核心任务分解：**
+
+1. [✅]**数据模型层**：定义 `Tag` 模型和一个用于连接 `Prompt` 和 `Tag` 的关联表。
+2. [✅]**数据校验层**：为 `Tag` 创建新的 Schema，并且让 `PromptResponse` 能够展示其关联的标签列表。
+3. [✅]**业务逻辑层**：更新 CRUD 函数，需要添加创建和管理标签的函数，以及将标签关联到 Prompt 的函数。
+4. [✅]**API 接口层**：将这些新的业务逻辑通过 API 端点暴露出去。
+5. [✅]**安全**：实现密码哈希存储（这是用户系统最最关键的一点）。
+6. [✅]**测试脚本**：实现测试脚本
+
+现在正式开始实现 **选项 2: 标签系统 (+10分)**。
+
+将通过一个关联表 `Association Table` 来实现 `Prompt` 和 `Tag` 之间的多对多 `Many-to-Many` 关系。
+
+#### **第一步：更新数据模型 (`models.py`)**
+
+这是最关键的一步。定义 `Tag` 模型和一个用于连接 `Prompt` 和 `Tag` 的关联表。
+
+1. **导入 `Table`**：在 `sqlalchemy` 的导入语句中，加入 `Table`。
+2. **定义关联表**：在所有类定义之前，定义 `prompt_tag_association` 表。这只是一个表结构，不是一个 ORM 模型类。
+3. **创建 `Tag` 模型**：定义一个新的 `Tag` 类。
+4. **在 `Prompt` 和 `Tag` 模型中建立关系**：使用 `relationship` 并通过 `secondary` 参数指向我们创建的关联表。
+
+将你的 `src/app/models.py` 文件更新为以下内容：
+
+```python
+# src/app/models.py
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table
+...
+# --- 新增：Prompt 和 Tag 的多对多关联表 ---
+prompt_tag_association = Table('prompt_tag_association', Base.metadata,
+    Column('prompt_id', Integer, ForeignKey('prompts.id'), primary_key=True),
+    Column('tag_id', Integer, ForeignKey('tags.id'), primary_key=True)
+)
+
+class Tag(Base):
+    """
+    标签数据模型
+    """
+    __tablename__ = "tags"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(50), unique=True, index=True, nullable=False)
+
+    # 建立与 Prompt 的多对多关系
+    prompts = relationship(
+        "Prompt",
+        secondary=prompt_tag_association,
+        back_populates="tags"
+    )
+
+    def __repr__(self):
+        return f"<Tag(id={self.id}, name='{self.name}')>"
+...
+class Prompt(Base):
+...
+    # --- 新增：与 Tag 的多对多关系 ---
+    tags = relationship(
+        "Tag",
+        secondary=prompt_tag_association,
+        back_populates="prompts"
+    )
+...
+```
+
+#### **第二步：更新 Pydantic Schemas (`schemas.py`)**
+
+为 `Tag` 创建新的 Schema，并且让 `PromptResponse` 能够展示其关联的标签列表。
+
+将 `src/app/schemas.py` 文件更新为以下内容：
+
+```python
+# src/app/schemas.py
+from typing import Optional, List
+# ==================== Tag Schemas ====================
+
+class TagBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50, description="标签名称")
+
+class TagCreate(TagBase):
+    pass
+
+class TagResponse(TagBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+# ==================== User Schemas ====================
+...
+class PromptResponse(PromptBase):
+...
+    # --- 新增：在返回 Prompt 时，包含其所有标签 ---
+    tags: List[TagResponse] = []
+...
+```
+
+---
+
+#### **第三步：更新 CRUD 操作 (`crud.py`)**
+
+这是业务逻辑的核心。我们需要添加创建和管理标签的函数，以及将标签关联到 Prompt 的函数。**特别是 `get_prompts` 函数的修改，它将支持按标签进行筛选**。
+
+将你的 `src/app/crud.py` 文件更新为以下内容：
+
+```python
+# src/app/crud.py
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from typing import List, Optional
+from . import models, schemas
+import bcrypt
+...
+# ==================== User CRUD ====================
+# ... (User CRUD functions remain the same) ...
+
+# ==================== Tag CRUD (New) ====================
+
+def get_tag(db: Session, tag_id: int):
+    """根据 ID 获取标签"""
+    return db.query(models.Tag).filter(models.Tag.id == tag_id).first()
+
+def get_tag_by_name(db: Session, name: str):
+    """根据名称获取标签"""
+    return db.query(models.Tag).filter(models.Tag.name == name).first()
+
+def get_tags(db: Session, skip: int = 0, limit: int = 100):
+    """获取标签列表"""
+    return db.query(models.Tag).offset(skip).limit(limit).all()
+
+def create_tag(db: Session, tag: schemas.TagCreate):
+    """创建新标签"""
+    db_tag = models.Tag(name=tag.name)
+    db.add(db_tag)
+    db.commit()
+    db.refresh(db_tag)
+    return db_tag
+
+def add_tag_to_prompt(db: Session, db_prompt: models.Prompt, db_tag: models.Tag):
+    """为 Prompt 添加一个标签"""
+    if db_tag not in db_prompt.tags:
+        db_prompt.tags.append(db_tag)
+        db.commit()
+        db.refresh(db_prompt)
+    return db_prompt
+
+def remove_tag_from_prompt(db: Session, db_prompt: models.Prompt, db_tag: models.Tag):
+    """从 Prompt 移除一个标签"""
+    if db_tag in db_prompt.tags:
+        db_prompt.tags.remove(db_tag)
+        db.commit()
+        db.refresh(db_prompt)
+    return db_prompt
+
+# ==================== Prompt CRUD ====================
+...
+
+# 【重要更新】修改 get_prompts 以支持按标签筛选
+def get_prompts(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    tags: Optional[List[str]] = None
+):
+    """
+    从数据库中查询 Prompt 列表，支持分页和按标签筛选。
+    如果提供了 tags 列表，则只返回包含所有指定标签的 Prompts。
+    """
+    query = db.query(models.Prompt)
+
+    if tags:
+        # 这个查询逻辑确保返回的 Prompt 必须拥有 *所有* 指定的标签
+        for tag_name in tags:
+            query = query.filter(models.Prompt.tags.any(name=tag_name))
+            
+    # 计算总数（在应用分页之前）
+    total = query.count()
+    
+    # 应用分页
+    prompts = query.offset(skip).limit(limit).all()
+    
+    return prompts, total
+
+...
+```
+
+#### **第四步：更新 API 接口 (`main.py`)**
+
+最后，将这些新的业务逻辑通过 API 端点暴露出去。
+
+1. **添加 `/tags` 相关端点**：用于创建和列出标签。
+2. **添加 `/prompts/{prompt_id}/tags` 相关端点**：用于给 Prompt 添加和移除标签，并进行权限检查。
+3. **修改 `GET /prompts` 端点**：使其能够接收 `tags` 查询参数。
+
+将 `src/app/main.py` 文件更新为以下内容：
+
+```python
+# src/app/main.py
+
+from fastapi import FastAPI, Depends, HTTPException, Query, Header
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+from sqlalchemy import text, func
+from sqlalchemy.exc import IntegrityError
+from typing import Annotated, Optional, List
+from . import models, crud, schemas
+from .database import lifespan, get_db
+from .config import settings
+
+app = FastAPI(
+    title="LLM Prompt Management System",
+    description="一个用于管理 LLM 提示词的 API 系统",
+    version="0.2.0", # 版本升级
+    lifespan=lifespan
+)
+
+DBSession = Annotated[Session, Depends(get_db)]
+# CurrentUser = Annotated[models.User, Depends(crud.get_current_user)] # 使用 crud 中的函数
+
+# ... (Health Check Endpoints remain the same) ...
+
+# ==================== Tag Endpoints (New) ====================
+
+@app.post("/tags", response_model=schemas.TagResponse, status_code=201, summary="创建新标签")
+async def create_tag_endpoint(tag: schemas.TagCreate, db: DBSession, current_user: CurrentUser):
+    """
+    创建一个新的标签。标签名必须是唯一的。
+    需要认证。
+    """
+    db_tag = crud.get_tag_by_name(db, name=tag.name)
+    if db_tag:
+        raise HTTPException(status_code=400, detail="Tag with this name already exists")
+    return crud.create_tag(db=db, tag=tag)
+
+@app.get("/tags", response_model=List[schemas.TagResponse], summary="获取所有标签")
+async def list_tags_endpoint(db: DBSession, skip: int = 0, limit: int = 100):
+    """
+    获取所有已创建的标签列表。
+    """
+    tags = crud.get_tags(db, skip=skip, limit=limit)
+    return tags
+
+# ==================== Prompt-Tag Association Endpoints (New) ====================
+
+@app.post("/prompts/{prompt_id}/tags/{tag_id}", response_model=schemas.PromptResponse, summary="为提示词添加标签")
+async def add_tag_to_prompt_endpoint(
+    prompt_id: int,
+    tag_id: int,
+    db: DBSession,
+    current_user: CurrentUser
+):
+    """
+    为一个提示词添加一个标签。
+    - 只有提示词的所有者才能操作。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    if db_prompt.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this prompt")
+    
+    db_tag = crud.get_tag(db, tag_id=tag_id)
+    if not db_tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+        
+    return crud.add_tag_to_prompt(db=db, db_prompt=db_prompt, db_tag=db_tag)
+
+
+@app.delete("/prompts/{prompt_id}/tags/{tag_id}", response_model=schemas.PromptResponse, summary="从提示词移除标签")
+async def remove_tag_from_prompt_endpoint(
+    prompt_id: int,
+    tag_id: int,
+    db: DBSession,
+    current_user: CurrentUser
+):
+    """
+    从一个提示词移除一个标签。
+    - 只有提示词的所有者才能操作。
+    """
+    db_prompt = crud.get_prompt(db, prompt_id=prompt_id)
+    if not db_prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    if db_prompt.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this prompt")
+        
+    db_tag = crud.get_tag(db, tag_id=tag_id)
+    if not db_tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+        
+    return crud.remove_tag_from_prompt(db=db, db_prompt=db_prompt, db_tag=db_tag)
+
+
+# ==================== Prompt CRUD Endpoints (Updated) ====================
+
+# 【重要更新】修改 list_prompts_endpoint 以支持按标签查询
+@app.get("/prompts", response_model=schemas.PromptList, summary="列出所有提示词 (支持按标签筛选)")
+async def list_prompts_endpoint(
+    db: DBSession,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    tags: Optional[str] = Query(None, description="用逗号分隔的标签名, e.g., 'marketing,sales'")
+):
+    """
+    获取所有提示词列表，支持分页和按标签筛选。
+    """
+    tag_list = tags.split(',') if tags else None
+    prompts, total = crud.get_prompts(db, skip=skip, limit=limit, tags=tag_list)
+    return {"total": total, "prompts": prompts}
+
+
+# ... (User endpoints and other Prompt endpoints remain the same) ...
+# (Copy the remaining endpoints from your existing main.py file here)
+...
+```
+
+#### **第五步：编写新的测试用例**
+
+代码改完了，现在必须用测试来验证新功能和权限逻辑是否正确。
+
+在 `tests/` 目录下创建一个 `test_tags.py`，并将以下代码粘贴进去。
+
+```python
+# tests/test_tags.py
+
+import httpx
+import pytest
+
+BASE_URL = "http://localhost:8002"
+
+# 共享状态，用于在测试用例之间传递数据
+test_state = {}
+
+# === 辅助函数：用于创建用户和 Prompt，减少重复代码 ===
+def create_user(username, password):
+    with httpx.Client() as client:
+        response = client.post(f"{BASE_URL}/users", json={"username": username, "password": password})
+        assert response.status_code == 201
+        return response.json()
+
+def create_prompt(user_id, title, content):
+    with httpx.Client() as client:
+        headers = {"X-User-ID": str(user_id)}
+        response = client.post(
+            f"{BASE_URL}/prompts",
+            json={"title": title, "content": content, "category": "Testing"},
+            headers=headers
+        )
+        assert response.status_code == 201
+        return response.json()
+
+# === 测试设置：创建两个用户和一些 Prompts ===
+@pytest.fixture(scope="module", autouse=True)
+def setup_users_and_prompts():
+    """在所有测试开始前运行一次，准备基础数据"""
+    print("\n--- Setting up initial data for tag tests ---")
+    user_charlie = create_user("charlie", "pass123")
+    user_diana = create_user("diana", "pass456")
+    
+    test_state["user_charlie_id"] = user_charlie["id"]
+    test_state["user_diana_id"] = user_diana["id"]
+    
+    prompt1 = create_prompt(user_charlie["id"], "Charlie's Marketing Prompt", "Content for marketing.")
+    prompt2 = create_prompt(user_charlie["id"], "Charlie's Sales Prompt", "Content for sales.")
+    prompt3 = create_prompt(user_diana["id"], "Diana's Engineering Prompt", "Content for engineering.")
+
+    test_state["charlie_prompt1_id"] = prompt1["id"]
+    test_state["charlie_prompt2_id"] = prompt2["id"]
+    test_state["diana_prompt3_id"] = prompt3["id"]
+    print("--- Initial data setup complete ---")
+
+
+# === 正式测试用例 ===
+
+def test_1_create_tags():
+    """测试创建新标签"""
+    user_id = test_state["user_charlie_id"]
+    headers = {"X-User-ID": str(user_id)}
+    
+    with httpx.Client() as client:
+        # 创建 marketing 标签
+        response = client.post(f"{BASE_URL}/tags", json={"name": "marketing"}, headers=headers)
+        assert response.status_code == 201
+        data = response.json()
+        assert data["name"] == "marketing"
+        test_state["tag_marketing_id"] = data["id"]
+
+        # 创建 sales 标签
+        response = client.post(f"{BASE_URL}/tags", json={"name": "sales"}, headers=headers)
+        assert response.status_code == 201
+        test_state["tag_sales_id"] = response.json()["id"]
+
+        # 创建 engineering 标签
+        response = client.post(f"{BASE_URL}/tags", json={"name": "engineering"}, headers=headers)
+        assert response.status_code == 201
+        test_state["tag_engineering_id"] = response.json()["id"]
+
+    print("\n✅ Created tags: marketing, sales, engineering")
+
+def test_2_create_duplicate_tag():
+    """测试创建同名标签，应该失败"""
+    user_id = test_state["user_charlie_id"]
+    headers = {"X-User-ID": str(user_id)}
+    with httpx.Client() as client:
+        response = client.post(f"{BASE_URL}/tags", json={"name": "marketing"}, headers=headers)
+        assert response.status_code == 400
+        assert "already exists" in response.json()["detail"]
+    print("\n✅ Duplicate tag creation failed as expected")
+
+
+@pytest.mark.depends(on=["test_1_create_tags"])
+def test_3_add_tags_to_prompt():
+    """测试为 Prompt 添加标签"""
+    user_id = test_state["user_charlie_id"]
+    headers = {"X-User-ID": str(user_id)}
+    prompt_id = test_state["charlie_prompt1_id"]
+    tag_id = test_state["tag_marketing_id"]
+
+    with httpx.Client() as client:
+        # 为 Charlie 的 prompt 1 添加 marketing 标签
+        response = client.post(f"{BASE_URL}/prompts/{prompt_id}/tags/{tag_id}", headers=headers)
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证返回的 prompt 数据中包含了 marketing 标签
+        tag_names = [tag["name"] for tag in data["tags"]]
+        assert "marketing" in tag_names
+        assert len(data["tags"]) == 1
+    
+    print(f"\n✅ Added 'marketing' tag to prompt {prompt_id}")
+
+@pytest.mark.depends(on=["test_3_add_tags_to_prompt"])
+def test_4_diana_cannot_add_tag_to_charlies_prompt():
+    """权限测试：Diana 尝试为 Charlie 的 Prompt 添加标签，应该失败"""
+    diana_id = test_state["user_diana_id"]
+    headers = {"X-User-ID": str(diana_id)}
+    prompt_id = test_state["charlie_prompt1_id"] # Charlie's prompt
+    tag_id = test_state["tag_sales_id"]
+
+    with httpx.Client() as client:
+        response = client.post(f"{BASE_URL}/prompts/{prompt_id}/tags/{tag_id}", headers=headers)
+        assert response.status_code == 403
+        assert "Not authorized" in response.json()["detail"]
+    
+    print("\n✅ Diana was correctly forbidden from modifying Charlie's prompt tags")
+
+@pytest.mark.depends(on=["test_3_add_tags_to_prompt"])
+def test_5_list_prompts_by_tag():
+    """测试按标签筛选 Prompt 列表"""
+    with httpx.Client() as client:
+        # 筛选包含 marketing 标签的 prompts
+        response = client.get(f"{BASE_URL}/prompts?tags=marketing")
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 应该只返回一个结果 (charlie_prompt1)
+        assert data["total"] == 1
+        assert data["prompts"][0]["id"] == test_state["charlie_prompt1_id"]
+        assert data["prompts"][0]["title"] == "Charlie's Marketing Prompt"
+    
+    print("\n✅ Successfully filtered prompts by tag 'marketing'")
+
+@pytest.mark.depends(on=["test_5_list_prompts_by_tag"])
+def test_6_list_prompts_by_multiple_tags():
+    """测试按多个标签筛选（目前我们的逻辑是 AND，所以应该返回 0）"""
+    with httpx.Client() as client:
+        # 筛选同时包含 marketing 和 sales 的 prompts
+        response = client.get(f"{BASE_URL}/prompts?tags=marketing,sales")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0 # 因为还没有 prompt 同时拥有这两个标签
+    
+    # 现在，我们给 Charlie's Prompt 1 再加上 sales 标签
+    user_id = test_state["user_charlie_id"]
+    headers = {"X-User-ID": str(user_id)}
+    prompt_id = test_state["charlie_prompt1_id"]
+    tag_id = test_state["tag_sales_id"]
+    with httpx.Client() as client:
+        client.post(f"{BASE_URL}/prompts/{prompt_id}/tags/{tag_id}", headers=headers)
+
+    # 再次筛选
+    with httpx.Client() as client:
+        response = client.get(f"{BASE_URL}/prompts?tags=marketing,sales")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1 # 现在应该有了
+        assert data["prompts"][0]["id"] == test_state["charlie_prompt1_id"]
+        
+    print("\n✅ Successfully filtered prompts by multiple tags 'marketing,sales'")
+
+@pytest.mark.depends(on=["test_6_list_prompts_by_multiple_tags"])
+def test_7_remove_tag_from_prompt():
+    """测试从 Prompt 移除标签"""
+    user_id = test_state["user_charlie_id"]
+    headers = {"X-User-ID": str(user_id)}
+    prompt_id = test_state["charlie_prompt1_id"]
+    tag_id = test_state["tag_marketing_id"]
+
+    with httpx.Client() as client:
+        response = client.delete(f"{BASE_URL}/prompts/{prompt_id}/tags/{tag_id}", headers=headers)
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证返回的数据中已经没有 marketing 标签了，但应该还有 sales 标签
+        tag_names = [tag["name"] for tag in data["tags"]]
+        assert "marketing" not in tag_names
+        assert "sales" in tag_names
+        assert len(data["tags"]) == 1
+    
+    print(f"\n✅ Successfully removed 'marketing' tag from prompt {prompt_id}")
+```
+
+#### **第六步：重启、测试和提交**
+
+1. **重启 Docker Compose**
+
+    ```bash
+    docker compose up --build
+    ```
+
+    确保 `api-1` 和 `db-1` 都正常启动。
+
+2. **运行测试**
+    打开第二个终端，运行你的测试脚本。`pytest` 会自动发现并运行两个测试文件中的所有测试用例。
+
+    ```bash
+    ./test.sh tests/test_tags.py
+    ```
+
+    你应该能看到 `tests/test_tags.py` 中的所有测试都成功通过！
+
+    ```bash
+    $ ./test.sh tests/test_tags.py
+    --- 🚀 Starting API tests against running Docker container ---
+    --- Target URL: http://localhost:8002 ---
+
+    ========================================================= test session starts ==========================================================
+    platform win32 -- Python 3.11.5, pytest-7.4.0, pluggy-1.0.0 -- D:\Anaconda\python.exe
+    cachedir: .pytest_cache
+    rootdir: D:\code\agent-v1\LLM-X\LLM-X-Season2\Lesson1\prompt-management-system
+    plugins: depends-1.0.1, anyio-3.5.0
+    collected 7 items                                                                                                                       
+
+    tests/test_tags.py::test_1_create_tags
+    --- Setting up initial data for tag tests ---
+    --- Initial data setup complete ---
+
+    ✅ Created tags: marketing, sales, engineering
+    PASSED
+    tests/test_tags.py::test_2_create_duplicate_tag
+    ✅ Duplicate tag creation failed as expected
+    PASSED
+    tests/test_tags.py::test_3_add_tags_to_prompt
+    ✅ Added 'marketing' tag to prompt 1
+    PASSED
+    tests/test_tags.py::test_4_diana_cannot_add_tag_to_charlies_prompt
+    ✅ Diana was correctly forbidden from modifying Charlie's prompt tags
+    PASSED
+    tests/test_tags.py::test_5_list_prompts_by_tag
+    ✅ Successfully filtered prompts by tag 'marketing'
+    PASSED
+    tests/test_tags.py::test_6_list_prompts_by_multiple_tags
+    ✅ Successfully filtered prompts by multiple tags 'marketing,sales'
+    PASSED
+    tests/test_tags.py::test_7_remove_tag_from_prompt
+    ✅ Successfully removed 'marketing' tag from prompt 1
+    PASSED
+
+    ========================================================== 7 passed in 19.38s ==========================================================
+    ```
+
+3. **提交成果**
+    完成了一个进阶功能，现在用一次清晰的 Git 提交来记录它。
+
+    ```bash
+    # 将所有修改过的和新建的文件添加到暂存区
+    git add pyproject.toml src/app/models.py src/app/schemas.py src/app/crud.py src/app/main.py tests/test_users_and_auth.py
+
+    # 提交一个符合规范的 commit
+    git commit -m "feat(auth): implement user system and ownership-based authorization"
+    ```

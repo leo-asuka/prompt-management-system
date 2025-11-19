@@ -1,10 +1,34 @@
 # src/app/models.py
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table
 from sqlalchemy.orm import relationship  # 导入 relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
 Base = declarative_base()
+
+# Prompt 和 Tag 的多对多关联表
+prompt_tag_association = Table('prompt_tag_association', Base.metadata,
+    Column('prompt_id', Integer, ForeignKey('prompts.id'), primary_key=True),
+    Column('tag_id', Integer, ForeignKey('tags.id'), primary_key=True)
+)
+
+class Tag(Base):
+    """
+    标签数据模型
+    """
+    __tablename__ = "tags"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(50), unique=True, index=True, nullable=False)
+
+    # 建立与 Prompt 的多对多关系
+    prompts = relationship(
+        "Prompt",
+        secondary=prompt_tag_association,
+        back_populates="tags"
+    )
+
+    def __repr__(self):
+        return f"<Tag(id={self.id}, name='{self.name}')>"
 
 class User(Base):
     """
@@ -55,6 +79,13 @@ class Prompt(Base):
     # 建立与 User 模型的关系
     # 'owner' 是一个虚拟字段，可以让我们通过 prompt.owner 访问创建者 User 对象
     owner = relationship("User", back_populates="prompts")
+
+    # --- 新增：与 Tag 的多对多关系 ---
+    tags = relationship(
+        "Tag",
+        secondary=prompt_tag_association,
+        back_populates="prompts"
+    )
 
     def __repr__(self):
         return f"<Prompt(id={self.id}, title='{self.title}', category='{self.category}')>"

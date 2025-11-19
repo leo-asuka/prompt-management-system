@@ -1,7 +1,21 @@
 # src/app/schemas.py
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
+
+# ==================== Tag Schemas ====================
+
+class TagBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50, description="标签名称")
+
+class TagCreate(TagBase):
+    pass
+
+class TagResponse(TagBase):
+    id: int
+
+    class Config:
+        from_attributes = True
 
 # ==================== User Schemas ====================
 
@@ -47,7 +61,9 @@ class PromptResponse(PromptBase):
     created_at: datetime
     updated_at: datetime
     owner: UserResponse  # 嵌套 UserResponse Schema
-
+    # --- 新增：在返回 Prompt 时，包含其所有标签 ---
+    tags: List[TagResponse] = []
+    
     # Pydantic V2 的配置项
     class Config:
         # from_attributes = True 告诉 Pydantic 模型可以从 ORM 对象（数据库模型实例）中读取数据。

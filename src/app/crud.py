@@ -1,7 +1,9 @@
 # src/app/crud.py
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from .models import Prompt
 from .schemas import PromptCreate, PromptUpdate
+from typing import List, Optional
 from . import models, schemas  # 导入 models 和 schemas
 import bcrypt
 
@@ -24,6 +26,44 @@ def create_user(db: Session, user: schemas.UserCreate):
     db.commit()
     db.refresh(db_user)
     return db_user
+
+# ==================== Tag CRUD (New) ====================
+
+def get_tag(db: Session, tag_id: int):
+    """根据 ID 获取标签"""
+    return db.query(models.Tag).filter(models.Tag.id == tag_id).first()
+
+def get_tag_by_name(db: Session, name: str):
+    """根据名称获取标签"""
+    return db.query(models.Tag).filter(models.Tag.name == name).first()
+
+def get_tags(db: Session, skip: int = 0, limit: int = 100):
+    """获取标签列表"""
+    return db.query(models.Tag).offset(skip).limit(limit).all()
+
+def create_tag(db: Session, tag: schemas.TagCreate):
+    """创建新标签"""
+    db_tag = models.Tag(name=tag.name)
+    db.add(db_tag)
+    db.commit()
+    db.refresh(db_tag)
+    return db_tag
+
+def add_tag_to_prompt(db: Session, db_prompt: models.Prompt, db_tag: models.Tag):
+    """为 Prompt 添加一个标签"""
+    if db_tag not in db_prompt.tags:
+        db_prompt.tags.append(db_tag)
+        db.commit()
+        db.refresh(db_prompt)
+    return db_prompt
+
+def remove_tag_from_prompt(db: Session, db_prompt: models.Prompt, db_tag: models.Tag):
+    """从 Prompt 移除一个标签"""
+    if db_tag in db_prompt.tags:
+        db_prompt.tags.remove(db_tag)
+        db.commit()
+        db.refresh(db_prompt)
+    return db_prompt
 
 # ==================== Prompt CRUD ====================
 # 创建 Prompt 时需要知道是哪个用户创建的
@@ -51,9 +91,30 @@ def get_prompts_by_user(db: Session, user_id: int, skip: int = 0, limit: int = 1
     """获取指定用户的所有 Prompts"""
     return db.query(models.Prompt).filter(models.Prompt.user_id == user_id).offset(skip).limit(limit).all()
 
-def get_prompts(db: Session, skip: int = 0, limit: int = 100):
-    """从数据库中查询 Prompt 列表，支持分页。"""
-    return db.query(Prompt).offset(skip).limit(limit).all()
+def get_prompts(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    tags: Optional[List[str]] = None
+):
+    """
+    从数据库中查询 Prompt 列表，支持分页和按标签筛选。
+    如果提供了 tags 列表，则只返回包含所有指定标签的 Prompts。
+    """
+    query = db.query(models.Prompt)
+
+    if tags:
+        # 这个查询逻辑确保返回的 Prompt 必须拥有 *所有* 指定的标签
+        for tag_name in tags:
+            query = query.filter(models.Prompt.tags.any(name=tag_name))
+            
+    # 计算总数（在应用分页之前）
+    total = query.count()
+    
+    # 应用分页
+    prompts = query.offset(skip).limit(limit).all()
+    
+    return prompts, total
 
 def get_prompt(db: Session, prompt_id: int):
     """根据 ID 查询单个 Prompt。.first() 表示只返回第一条匹配的记录，如果没有找到则返回 None。"""
