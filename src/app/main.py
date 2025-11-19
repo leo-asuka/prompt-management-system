@@ -1,4 +1,4 @@
-# main.py
+# src/app/main.py
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -7,13 +7,7 @@ from sqlalchemy.exc import OperationalError
 from typing import Annotated
 from . import models
 from .database import lifespan, get_db
-from .crud import (
-    create_prompt,
-    get_prompts,
-    get_prompt,
-    update_prompt,
-    delete_prompt
-)
+from . import crud
 from .schemas import PromptCreate, PromptUpdate, PromptResponse, PromptList
 from .config import settings
 
@@ -27,7 +21,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-DBSession = Annotated[Session, Depends(lambda: get_db(app))]
+DBSession = Annotated[Session, Depends(lambda: get_db)]
 
 # ==================== 健康检查端点 ====================
 
@@ -69,7 +63,7 @@ async def db_health_check(db: DBSession):
 # ==================== 提示词 CRUD 端点 ====================
 
 @app.post("/prompts", response_model=PromptResponse, status_code=201, summary="创建新提示词")
-async def create_prompt(prompt: PromptCreate, db: DBSession):
+async def create_prompt_endpoint(prompt: PromptCreate, db: DBSession):
     """
     创建一个新的提示词模板。FastAPI 会自动处理：
     1. 校验请求体是否符合 PromptCreate schema。
@@ -80,10 +74,10 @@ async def create_prompt(prompt: PromptCreate, db: DBSession):
     - **content**: 提示词内容（必填）
     - **category**: 提示词分类（可选）
     """
-    return create_prompt(db, prompt)
+    return crud.create_prompt(db=db, prompt=prompt)
 
 @app.get("/prompts", response_model=PromptList, summary="列出所有提示词")
-async def list_prompts(
+async def list_prompts_endpoint(
     db: DBSession,
     skip: int = Query(0, ge=0, description="跳过的记录数"),
     limit: int = Query(100, ge=1, le=100, description="返回的最大记录数")
@@ -94,26 +88,26 @@ async def list_prompts(
     - **skip**: 跳过的记录数（默认0）
     - **limit**: 返回的最大记录数（默认100，最大100）
     """
-    prompts = get_prompts(db, skip, limit)
+    prompts = crud.get_prompts(db, skip, limit)
     # 【优化点】计算数据库中 prompt 的总数，用于分页
     total_count = db.query(func.count(models.Prompt.id)).scalar()
     return {"total": total_count, "prompts": prompts}
 
 @app.get("/prompts/{prompt_id}", response_model=PromptResponse, summary="获取特定提示词")
-async def get_prompt(prompt_id: int, db: DBSession):
+async def get_prompt_endpoint(prompt_id: int, db: DBSession):
     """
     根据ID获取特定的提示词详情
 
     - **prompt_id**: 提示词ID
     """
-    prompt = get_prompt(db, prompt_id)
+    prompt = crud.get_prompt(db, prompt_id)
     if not prompt:
         # 如果 CRUD 函数返回 None，说明记录不存在，抛出 404 异常。
         raise HTTPException(status_code=404, detail="Prompt not found")
     return prompt
 
 @app.put("/prompts/{prompt_id}", response_model=PromptResponse, summary="更新提示词")
-async def update_prompt(prompt_id: int, prompt_update: PromptUpdate, db: DBSession):
+async def update_prompt_endpoint(prompt_id: int, prompt_update: PromptUpdate, db: DBSession):
     """
     更新指定ID的提示词
 
@@ -122,17 +116,17 @@ async def update_prompt(prompt_id: int, prompt_update: PromptUpdate, db: DBSessi
     - **content**: 新的内容（可选）
     - **category**: 新的分类（可选）
     """
-    prompt = update_prompt(db, prompt_id, prompt_update)
+    prompt = crud.update_prompt(db, prompt_id, prompt_update)
     if not prompt:
         raise HTTPException(status_code=404, detail="Prompt not found")
     return prompt
 
 @app.delete("/prompts/{prompt_id}", status_code=204, summary="删除提示词")
-async def delete_prompt(prompt_id: int, db: DBSession):
+async def delete_prompt_endpoint(prompt_id: int, db: DBSession):
     """
     删除指定ID的提示词
 
     - **prompt_id**: 提示词ID
     """
-    delete_prompt(db, prompt_id)
+    crud.delete_prompt(db, prompt_id)
     return JSONResponse(status_code=204)
