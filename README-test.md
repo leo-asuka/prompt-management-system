@@ -5325,15 +5325,7 @@ services:
 
 详见(`😭 学习 GitHub Flow`)
 
-```bash
-git add .
-
-git commit -m "feat(observability): add structured logging and prometheus metrics"
-```
-
 #### **总结**
-
-你现在已经给你的法拉利装上了：
 
 1. **黑匣子 (Logging)**：发生事故（报错）或日常行驶（CRUD）时，有详细的 JSON 数据记录。
 2. **仪表盘 (Prometheus)**：实时显示车速（QPS）、油耗（Latency）等核心指标。
@@ -5422,8 +5414,14 @@ git add .
 **命令：**
 
 ```bash
+
+# 提交代码
+# feat: 新功能
+# (observability): 范围
+# 后面的文字描述具体做了什么
 git add .
-git commit -m "feat: add /v1/chat endpoint"
+git commit -m "feat(observability): add structured logging and prometheus metrics"
+# git commit -m "feat: add /v1/chat endpoint"
 ```
 
 - **含义**：
@@ -5438,7 +5436,8 @@ git commit -m "feat: add /v1/chat endpoint"
 **命令：**
 
 ```bash
-git push origin feature/add-new-endpoint
+# 推送当前分支到远程仓库
+git push origin feature/observability
 ```
 
 - **含义**：
@@ -5451,7 +5450,7 @@ git push origin feature/add-new-endpoint
 
 ### 第五步：创建 Pull Request (申请合并)
 
-这是 GitHub Flow 的灵魂，也是最“仪式感”的一步。这一步**不是在终端里做的，而是在 GitHub 网页上做的**。
+最关键的一步：这是 GitHub Flow 的灵魂，也是最“仪式感”的一步。这一步**不是在终端里做的，而是在 GitHub 网页上做的**。
 
 **操作流程**：
 
@@ -5477,24 +5476,35 @@ git push origin feature/add-new-endpoint
 
 代码合并到 GitHub 的 `main` 后，你本地电脑的 `main` 还是旧的。你需要同步回来，并清理现场。
 
+当 CI 变绿后：
+
+1. 在网页上：点击 **"Merge pull request"** -> **"Confirm merge"**。
+恭喜！你的代码正式进入了主分支。
+
+2. 回到本地终端 (VS Code)：
+现在云端的 `main` 是最新的，但你本地的 `main` 还是旧的。我们需要同步回来。
+
 **回到 VS Code 终端：**
 
 1. **切回主分支**：
 
     ```bash
-    git checkout main
+    # 1. 切回主分支
+    git checkout master   # (或者 main，看你的主分支叫什么)
     ```
 
 2. **拉取最新代码** (把刚才在网页上合并的内容拉下来)：
 
     ```bash
-    git pull origin main
+    # 2. 拉取云端最新的代码 (包含了刚才合并的监控功能)
+    git pull origin master
     ```
 
 3. **删除旧分支** (辅路已经并入主路，辅路可以拆了)：
 
     ```bash
-    git branch -d feature/add-new-endpoint
+    # 3. 删除那个已经合并过的功能分支 (清理现场)
+    git branch -d feature/observability
     ```
 
 ### 总结：为什么你要这么做？
@@ -5504,3 +5514,32 @@ git push origin feature/add-new-endpoint
 3. **清晰的历史**：通过分支名和 PR，你可以清晰地知道每一个功能是什么时候、为了什么加入系统的。
 
 这就是专业的 GitHub Flow！下次做新功能时，请务必尝试这个流程。
+
+### `error: cannot delete branch`
+
+“你正站在这个树枝上，所以不能锯断它！”
+
+1. 切换回主分支
+
+    ```bash
+    git checkout master
+    ```
+
+2. 再次尝试删除
+
+    ```bash
+    git branch -d feature/observability
+    ```
+
+3. 怎么验证我当前在哪个分支？
+
+    ```bash
+    git branch
+    ```
+
+你会看到一列分支名。
+前面带星号 * 和高亮颜色的，就是你当前所在的分支。
+
+### `git checkout master` -> `error: Your local changes`
+
+“你手头还有没保存的工作（修改过的代码），如果现在切换分支，这些工作就会丢失（被覆盖）。Git 为了保护你的代码，阻止了这次切换。”

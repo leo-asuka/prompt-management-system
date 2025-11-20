@@ -129,7 +129,9 @@ def create_prompt(db: Session, prompt: schemas.PromptCreate, user_id: int):
     )
     db.add(db_prompt)  # 将新对象添加到 Session 中（暂存）
     db.commit()  # 将暂存的更改提交到数据库
-    db.refresh(db_prompt)  # 刷新 db_prompt 对象，以获取数据库生成的值（如 id, created_at）
+    db.refresh(
+        db_prompt
+    )  # 刷新 db_prompt 对象，以获取数据库生成的值（如 id, created_at）
     # 2. 创建版本 1 快照
     version = models.PromptVersion(
         prompt_id=db_prompt.id,

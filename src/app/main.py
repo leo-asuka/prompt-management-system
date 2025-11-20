@@ -256,7 +256,9 @@ async def list_prompt_executions_endpoint(
 # ==================== Tag Endpoints ====================
 
 
-@app.post("/tags", response_model=schemas.TagResponse, status_code=201, summary="创建新标签")
+@app.post(
+    "/tags", response_model=schemas.TagResponse, status_code=201, summary="创建新标签"
+)
 async def create_tag_endpoint(
     tag: schemas.TagCreate, db: DBSession, current_user: CurrentUser
 ):
@@ -432,8 +434,12 @@ async def list_prompts_endpoint(
     db: DBSession,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=200),
-    tags: Optional[str] = Query(None, description="用逗号分隔的标签名, e.g., 'marketing,sales'"),
-    sort: Optional[str] = Query(None, description="排序字段。使用 'rating' 按平均分排序。"),
+    tags: Optional[str] = Query(
+        None, description="用逗号分隔的标签名, e.g., 'marketing,sales'"
+    ),
+    sort: Optional[str] = Query(
+        None, description="排序字段。使用 'rating' 按平均分排序。"
+    ),
 ):
     """
     获取所有提示词列表（支持分页）
@@ -448,7 +454,9 @@ async def list_prompts_endpoint(
     return {"total": total, "prompts": prompts}
 
 
-@app.get("/prompts/{prompt_id}", response_model=PromptResponse, summary="获取特定提示词")
+@app.get(
+    "/prompts/{prompt_id}", response_model=PromptResponse, summary="获取特定提示词"
+)
 async def get_prompt_endpoint(prompt_id: int, db: DBSession):
     """
     根据ID获取特定的提示词详情
@@ -496,7 +504,9 @@ async def update_prompt_endpoint(
     return crud.update_prompt(db=db, db_prompt=db_prompt, prompt_update=prompt_update)
 
 
-@app.delete("/prompts/{prompt_id}", status_code=204, summary="删除提示词 (需要认证和所有权)")
+@app.delete(
+    "/prompts/{prompt_id}", status_code=204, summary="删除提示词 (需要认证和所有权)"
+)
 async def delete_prompt_endpoint(
     prompt_id: int, db: DBSession, current_user: CurrentUser
 ):
