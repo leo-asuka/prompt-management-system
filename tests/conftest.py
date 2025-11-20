@@ -5,7 +5,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
 
-from src.app.database import Base, get_db
+from src.app.database import get_db
+from src.app.models import Base
 from src.app.main import app
 
 from unittest.mock import MagicMock
