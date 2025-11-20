@@ -123,7 +123,9 @@ class PromptExecuteRequest(BaseModel):
     variables 是一个字典，用于替换 Prompt 内容中的模板变量
     """
 
-    variables: Dict[str, Any] = Field({}, description="用于替换提示词模板中变量的键值对")
+    variables: Dict[str, Any] = Field(
+        {}, description="用于替换提示词模板中变量的键值对"
+    )
 
 
 class PromptExecutionResponse(BaseModel):

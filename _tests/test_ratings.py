@@ -71,7 +71,9 @@ def test_1_helen_rates_prompt():
             json={"score": 5},
             headers=headers,
         )
-        assert response.status_code == 201  # 应该是 200 OK 或 201 Created，取决于你的实现
+        assert (
+            response.status_code == 201
+        )  # 应该是 200 OK 或 201 Created，取决于你的实现
         data = response.json()
         assert data["score"] == 5
         assert data["user_id"] == helen_id
