@@ -5705,11 +5705,11 @@ git commit -m "ci: add github actions and badges"
 第二步：建桥 (连接你的远程仓库)
 
 ```bash
-# 把所有新写的文件加入暂存区
-git add .
+# 关联远程仓库 (请确保你在 GitHub 上已经创建了名为 prompt-management-system 的仓库)
+git remote add origin https://github.com/leo-asuka/prompt-management-system.git
 
-# 提交到本地仓库
-git commit -m "ci: add github actions and badges"
+# 确保分支名正确
+git branch -M master
 ```
 
 第三步：发车 (推送到 GitHub)
