@@ -5692,6 +5692,35 @@ jobs:
 
 “建桥” (初始化)
 
+第一步：打包 (保存的修改)
+
+```bash
+# 把所有新写的文件加入暂存区
+git add .
+
+# 提交到本地仓库
+git commit -m "ci: add github actions and badges"
+```
+
+第二步：建桥 (连接你的远程仓库)
+
+```bash
+# 把所有新写的文件加入暂存区
+git add .
+
+# 提交到本地仓库
+git commit -m "ci: add github actions and badges"
+```
+
+第三步：发车 (推送到 GitHub)
+
+```bash
+# 推送代码，并触发 CI/CD
+git push -u origin master
+```
+
+解释：
+
 ```bash
 # 1. 关联远程仓库 (只需执行一次)
 # 注意：如果你起的仓库名不是 prompt-management-system，请修改下面的链接
@@ -5720,12 +5749,12 @@ git push origin master
 
 #### **结果**
 
-1. 当你 `git push` 后，去你的 GitHub 仓库页面。
+1. `git push` 后，去你的 GitHub 仓库页面。
 2. 点击顶部的 **"Actions"** 标签。
-3. 你应该能看到一个名为 "CI/CD Pipeline" 的 Workflow 正在运行。
-4. 点进去，你会看到 `Linting` 和 `Run Tests` 等步骤。
+3. 应该能看到一个名为 "CI/CD Pipeline" 的 Workflow 正在运行。
+4. 点进去，看到 `Linting` 和 `Run Tests` 等步骤。
 5. 如果一切顺利，它会变成绿色的 **Success** ✅。
-6. 你的 `README.md` 上的 "CI Status" 徽章也会变成绿色的 "passing"。
+6. `README.md` 上的 "CI Status" 徽章也会变成绿色的 "passing"。
 
 一套完整的、自动化的持续集成流水线完成。
 

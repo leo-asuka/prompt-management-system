@@ -1,6 +1,6 @@
 # LLM Prompt 管理系统
 
-![CI Status](https://github.com/<你的GitHub用户名>/<仓库名>/actions/workflows/test.yml/badge.svg)
+![CI Status](https://github.com/leo-asuka/prompt-management-system/actions/workflows/test.yml/badge.svg)
 ![Coverage](https://img.shields.io/badge/Coverage-89%25-brightgreen)
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.111.0-009688)
