@@ -33,7 +33,7 @@ jobs:
         #  更规范的做法是导出 requirements.txt 或使用 pdm install)
         pip install fastapi uvicorn pydantic-settings psycopg2-binary sqlalchemy \
                     bcrypt openai redis httpx pytest pytest-cov pytest-depends \
-                    python-dotenv
+                    python-dotenv jinja2
 
     # 4. 代码质量检查 (Linting)
     - name: Check code formatting with Black
