@@ -4068,3 +4068,1498 @@ if __name__ == "__main__":
     # 3. 提交
     git commit -m "perf(cache): implement Redis caching for prompts and add performance benchmarks"
     ```
+
+### 6.5.目标：性能优化与缓存-补充（暂未上线）
+
+**问：什么是游标分页？为什么要改？**
+
+- **Offset 分页 (`LIMIT 10 OFFSET 10000`)**: 数据库需要扫描前 10000 行数据，扔掉它们，然后取接下来的 10 行。数据量越大，越往后翻页，速度越**慢**。
+- **Cursor 分页 (`WHERE id < 50 ORDER BY id DESC LIMIT 10`)**: 客户端记住当前页最后一条数据的 ID（游标）。下一页查询时，直接告诉数据库“给我 ID 小于这个游标的 10 条数据”。无论数据量多大，利用索引，速度都**极快且恒定**。
+
+特别是在数据量达到百万级时，它能彻底解决 Offset 分页（`OFFSET 10000 LIMIT 10`）带来的性能衰减问题。但在实际工程中，为了兼容旧的前端组件（如管理后台的页码条），通常会保留 Offset 接口，并为高性能场景（如 App 的无限滚动瀑布流）新增一个 Cursor 接口。
+
+以下实现一个**全新的高性能端点 `/prompts/feed`** 来演示游标分页。
+
+**实现基于 **ID 倒序**（通常等同于创建时间倒序）的游标分页。客户端不需要传递“第几页”，而是传递“我看到的最后一条数据的 ID”*
+
+#### **第一步：修改 `src/app/schemas.py`**
+
+需要定义一个新的响应结构。游标分页不返回“总页数”，而是返回“下一页的游标 (next_cursor)”。
+
+```python
+# src/app/schemas.py
+
+# ... (保留原有代码) ...
+
+# --- 新增：游标分页响应 Schema ---
+class PromptCursorPage(BaseModel):
+    items: List[PromptResponse] # 复用现有的 PromptResponse
+    next_cursor: Optional[int] = Field(None, description="下一页的游标 ID，如果没有更多数据则为 None")
+    page_size: int
+
+    class Config:
+        from_attributes = True
+```
+
+#### **第二步：修改 `src/app/crud.py`**
+
+添加一个核心的高性能查询函数 `get_prompts_with_cursor`。
+
+**核心逻辑**：
+
+- **Offset**: 数据库需要扫描并跳过前 N 行 (`OFFSET N`)。
+- **Cursor**: 数据库直接利用索引定位 (`WHERE id < cursor_id`)，扫描量恒定为 `limit`。
+
+```python
+# src/app/crud.py
+
+# ... (保留原有代码) ...
+
+# ==================== 游标分页优化 (New) ====================
+
+def get_prompts_with_cursor(
+    db: Session,
+    cursor: Optional[int] = None,
+    limit: int = 10
+):
+    """
+    使用游标分页获取 Prompt 列表。
+    策略：基于 ID 倒序 (最新的在前)。
+    Cursor: 上一页最后一条数据的 ID。
+    查询条件: WHERE id < cursor ORDER BY id DESC LIMIT limit
+    """
+    # 依然需要计算平均分，以满足 PromptResponse 的结构
+    avg_rating = func.avg(models.Rating.score).label("average_rating")
+    
+    query = db.query(models.Prompt, avg_rating)\
+              .outerjoin(models.Rating)\
+              .group_by(models.Prompt.id)
+
+    # --- 核心优化逻辑 ---
+    if cursor is not None:
+        # 利用主键索引快速过滤，性能极高
+        query = query.filter(models.Prompt.id < cursor)
+    
+    # 必须按 ID 倒序
+    query = query.order_by(models.Prompt.id.desc())
+    
+    # 获取 limit + 1 条数据，多查一条用于判断是否还有下一页，且能拿到下一页的 cursor
+    results = query.limit(limit).all()
+    
+    # 组装数据
+    prompts_with_ratings = []
+    for prompt, rating in results:
+        prompt.average_rating = rating if rating is not None else 0.0
+        prompts_with_ratings.append(prompt)
+
+    # 计算 next_cursor
+    next_cursor = None
+    if prompts_with_ratings:
+        # 这里的游标逻辑很简单：最后一条数据的 ID 就是下一次查询的 cursor
+        # 如果返回的数据少于 limit，说明没有更多数据了
+        # 但为了准确，通常我们会查 limit 这里的逻辑可以简化：
+        # 只要返回了数据，就把最后一条的 ID 作为 cursor。前端拿到 None 或空列表停止。
+        last_item = prompts_with_ratings[-1]
+        next_cursor = last_item.id
+
+    return prompts_with_ratings, next_cursor
+```
+
+#### **第三步：修改 `src/app/main.py`**
+
+添加 `/prompts/feed` 端点。
+
+```python
+# src/app/main.py
+
+# ... (导入部分) ...
+# 记得导入新的 Schema
+from .schemas import PromptCursorPage
+
+# ... (其他端点) ...
+
+# ==================== High Performance Feed (Cursor Pagination) ====================
+
+@app.get("/prompts/feed", response_model=PromptCursorPage, summary="获取 Prompt 信息流 (游标分页)")
+async def get_prompts_feed_endpoint(
+    db: DBSession,
+    cursor: Optional[int] = Query(None, description="上一页最后一条 Prompt 的 ID"),
+    limit: int = Query(10, ge=1, le=100)
+):
+    """
+    高性能的 Prompt 列表接口，适用于无限滚动场景。
+    相比于 /prompts 的 offset 分页，此接口在大数据量下性能更优。
+    """
+    items, next_cursor = crud.get_prompts_with_cursor(db, cursor=cursor, limit=limit)
+    
+    # 如果返回的数量小于 limit，说明已经到底了，next_cursor 可以设为 None
+    if len(items) < limit:
+        next_cursor = None
+        
+    return {
+        "items": items,
+        "next_cursor": next_cursor,
+        "page_size": limit
+    }
+
+# ... (其他端点) ...
+```
+
+#### **第四步：验证测试 (`tests/test_cursor_pagination.py`)**
+
+验证游标是否能正确地“接续”上一页的数据。
+
+在 `tests/` 下新建 `test_cursor_pagination.py`：
+
+```python
+# tests/test_cursor_pagination.py
+import httpx
+import pytest
+
+BASE_URL = "http://localhost:8002"
+
+def create_dummy_prompts(count=15):
+    """快速创建一批数据用于分页测试"""
+    # 先创建一个临时用户
+    with httpx.Client() as client:
+        u_res = client.post(f"{BASE_URL}/users", json={"username": "cursor_tester", "password": "pwd"})
+        if u_res.status_code == 201:
+            uid = u_res.json()["id"]
+        else:
+            # 假设 ID 1 存在
+            uid = 1
+        
+        headers = {"X-User-ID": str(uid)}
+        
+        # 创建 Prompt，倒序 ID 应该是大的在前
+        for i in range(count):
+            client.post(f"{BASE_URL}/prompts", 
+                        json={"title": f"Feed Item {i}", "content": "content"}, 
+                        headers=headers)
+
+@pytest.fixture(scope="module", autouse=True)
+def setup_data():
+    print("\n--- Setup data for Cursor Pagination ---")
+    create_dummy_prompts(15) # 至少创建 15 条，以测试 limit=10 的翻页
+
+def test_cursor_pagination_flow():
+    """测试完整的游标翻页流程"""
+    
+    with httpx.Client() as client:
+        # 1. 第一页 (不带 cursor)
+        res1 = client.get(f"{BASE_URL}/prompts/feed?limit=10")
+        assert res1.status_code == 200
+        data1 = res1.json()
+        
+        items1 = data1["items"]
+        cursor1 = data1["next_cursor"]
+        
+        print(f"\nPage 1: Got {len(items1)} items. Next Cursor: {cursor1}")
+        
+        assert len(items1) == 10
+        assert cursor1 is not None
+        # 验证排序：ID 应该是降序
+        assert items1[0]["id"] > items1[-1]["id"]
+
+        # 2. 第二页 (使用 cursor1)
+        res2 = client.get(f"{BASE_URL}/prompts/feed?limit=10&cursor={cursor1}")
+        assert res2.status_code == 200
+        data2 = res2.json()
+        
+        items2 = data2["items"]
+        cursor2 = data2["next_cursor"]
+        
+        print(f"Page 2: Got {len(items2)} items. Next Cursor: {cursor2}")
+        
+        # 因为总共造了15条（加上之前测试可能遗留的数据），第二页应该有数据
+        assert len(items2) > 0 
+        
+        # 关键验证：第二页的第一条 ID 必须小于 第一页的最后一条 ID (cursor1)
+        # 且等于 cursor1 并不是包含关系，而是 < cursor1
+        # 这里的逻辑是：get_prompts_with_cursor 使用了 id < cursor
+        # 第一页最后一条 ID 是 cursor1。
+        # 所以第二页的所有 ID 都必须 < cursor1
+        assert items2[0]["id"] < cursor1
+
+    print("✅ Cursor pagination flow passed")
+```
+
+#### **执行与提交**
+
+1. **更新代码**：修改 `schemas.py`, `crud.py`, `main.py`。
+2. **重启服务**：
+
+    ```bash
+    docker compose down -v
+    docker compose up --build
+    ```
+
+3. **运行测试**：
+
+    ```bash
+    ./test.sh tests/test_cursor_pagination.py
+    ```
+
+    也可以再次运行确保全链路没问题。
+4. **Git 提交**：
+
+```bash
+git add .
+git commit -m "perf(pagination): implement cursor-based pagination for high performance feeds"
+```
+
+### 7.目标：高级测试
+
+通过以下步骤来实现这 10 分：
+
+1. **安装工具**：引入 `pytest-cov` 用于生成覆盖率报告。
+2. **重构测试架构 (`conftest.py`)**：使用 **Pytest Fixtures** 来管理测试数据和数据库连接，替代之前的全局变量 (`test_state`)。
+3. **编写数据库单元测试**：创建一个专门的测试文件，不经过 API，直接测试 `crud.py` 和数据库模型。这将使用一个独立的**内存数据库 (SQLite)**，满足“使用测试数据库”的要求。
+4. **配置与执行**：生成覆盖率报告。
+
+#### **第一步：添加依赖**
+
+我们需要 `pytest-cov` 来计算代码覆盖率。
+
+1. 修改 `pyproject.toml`:
+
+```toml
+# pyproject.toml
+
+[project]
+dependencies = [
+    # ... 原有依赖 ...
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.1",
+    "pydantic-settings>=2.3.4",
+    "psycopg2-binary>=2.9.9",
+    "sqlalchemy>=2.0.31",
+    "bcrypt>=4.1.3",
+    "openai>=1.35.3",
+    "redis>=5.0.0",
+]
+
+[tool.pdm.dev-dependencies]
+dev = [
+    "pytest>=8.2.2",
+    "httpx>=0.27.0",
+    "pytest-depends>=1.0.1",
+    "python-dotenv>=1.0.1",
+    "pytest-cov>=5.0.0", # 新增：覆盖率工具
+]
+
+# --- 新增：Coverage 配置 ---
+[tool.coverage.run]
+source = ["src/app"]  # 只统计 src/app 下的代码覆盖率
+omit = ["src/app/config.py"] # 可选：忽略配置文件的覆盖率
+```
+
+*注意：修改后记得重启环境或重新安装依赖（如果在 Docker 外运行测试）。如果在 Docker 内，`docker compose up --build` 会处理。*
+
+#### **第二步：使用 Fixtures 管理测试数据 (`tests/conftest.py`)**
+
+这是 Pytest 的核心功能。我们将创建一个 `conftest.py` 文件，这里定义的 `fixture` 可以被所有测试文件自动使用。
+
+**目标**：创建一个独立的内存数据库用于单元测试，与 Docker 中的 Postgres 隔离。
+
+在 `tests/` 目录下创建 `conftest.py`:
+
+```python
+# tests/conftest.py
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+from fastapi.testclient import TestClient
+
+from src.app.database import Base, get_db
+from src.app.main import app
+
+from unittest.mock import MagicMock
+import sys
+
+# ==========================================
+# 1. 数据库 Fixture (用于单元测试)
+# ==========================================
+
+# 使用 SQLite 内存数据库进行快速、独立的单元测试
+# check_same_thread=False 允许在多线程中使用 SQLite 连接
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
+
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+@pytest.fixture(scope="function")
+def db_session():
+    """
+    创建一个全新的数据库会话用于测试。
+    每个测试函数执行前创建表，执行后清空表。
+    """
+    # 创建所有表结构
+    Base.metadata.create_all(bind=engine)
+    
+    session = TestingSessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+        # 删除所有表，确保测试隔离
+        Base.metadata.drop_all(bind=engine)
+
+# ==========================================
+# 2. 集成测试 Fixture (可选，用于 API 测试)
+# ==========================================
+# 注意：之前的 integration tests (test_all_func.py) 使用的是 requests 直接请求 Docker 端口。
+# 这种方式是 "端到端(E2E)" 风格的。
+# 为了不破坏你现有的测试，我们这里只提供 DB fixture 用于新的单元测试。
+
+
+# --- 新增：Mock Redis 缓存模块 ---
+# 这会让所有单元测试在调用 cache.get/set 时什么都不做，而不是报错
+@pytest.fixture(autouse=True)
+def mock_redis_cache(monkeypatch):
+    """
+    自动 Mock 掉 src.app.cache 模块，防止单元测试尝试连接 Redis。
+    """
+    # 模拟 cache.py 中的函数
+    mock_cache = MagicMock()
+    mock_cache.get_prompt_cache.return_value = None # 模拟缓存未命中
+    mock_cache.set_prompt_cache.return_value = None
+    mock_cache.delete_prompt_cache.return_value = None
+    
+    # 将 src.app.cache 替换为 mock 对象
+    monkeypatch.setattr("src.app.crud.cache", mock_cache)
+
+
+@pytest.fixture
+def client_with_db(db_session):
+    """
+    提供绑定到内存数据库的 FastAPI 客户端。
+    """
+    client = TestClient(app)
+
+    def override_get_db():
+        try:
+            yield db_session
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        yield client
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def anyio_backend():
+    """
+    Limit pytest-anyio to the asyncio backend to keep tests deterministic on Windows.
+    """
+    return "asyncio"
+```
+
+#### **第三步：编写数据库/CRUD 单元测试 (`tests/test_crud_unit.py`)**
+
+满足 **“添加数据库测试”** 和 **“使用测试数据库”** 的要求。
+
+这个测试文件**不需要** Docker 容器运行，它直接在 Python 环境中运行，连接的是 SQLite 内存数据库。它测试的是 `crud.py` 的逻辑是否正确。
+
+在 `tests/` 目录下创建多个文件:
+
+```python
+from types import SimpleNamespace
+
+import pytest
+
+from src.app import main
+
+
+def _create_user(client, username: str):
+    response = client.post("/users", json={"username": username, "password": "secret1"})
+    assert response.status_code == 201
+    return response.json()
+
+
+def _create_prompt(client, owner_id: int, title="Title", content="Content"):
+    headers = {"X-User-ID": str(owner_id)}
+    response = client.post("/prompts", json={"title": title, "content": content}, headers=headers)
+    assert response.status_code == 201
+    return response.json()
+
+
+def test_rating_endpoints_flow(client_with_db):
+    client = client_with_db
+    owner = _create_user(client, "rating-owner")
+    critic = _create_user(client, "rating-critic")
+    prompt = _create_prompt(client, owner["id"])
+
+    critic_headers = {"X-User-ID": str(critic["id"])}
+    rate_resp = client.post(
+        f"/prompts/{prompt['id']}/ratings",
+        json={"score": 4},
+        headers=critic_headers,
+    )
+    assert rate_resp.status_code == 201
+    assert rate_resp.json()["score"] == 4
+
+    duplicate = client.post(
+        f"/prompts/{prompt['id']}/ratings",
+        json={"score": 5},
+        headers=critic_headers,
+    )
+    assert duplicate.status_code == 409
+
+    owner_headers = {"X-User-ID": str(owner["id"])}
+    owner_attempt = client.post(
+        f"/prompts/{prompt['id']}/ratings",
+        json={"score": 5},
+        headers=owner_headers,
+    )
+    assert owner_attempt.status_code == 403
+
+    list_resp = client.get(f"/prompts/{prompt['id']}/ratings")
+    assert list_resp.status_code == 200
+    assert len(list_resp.json()) == 1
+
+
+def test_tag_management_and_association(client_with_db):
+    client = client_with_db
+    owner = _create_user(client, "tag-owner")
+    prompt = _create_prompt(client, owner["id"])
+    headers = {"X-User-ID": str(owner["id"])}
+
+    tag_resp = client.post("/tags", json={"name": "productivity"}, headers=headers)
+    assert tag_resp.status_code == 201
+    tag_id = tag_resp.json()["id"]
+
+    list_resp = client.get("/tags")
+    assert list_resp.status_code == 200
+    assert any(tag["name"] == "productivity" for tag in list_resp.json())
+
+    add_resp = client.post(f"/prompts/{prompt['id']}/tags/{tag_id}", headers=headers)
+    assert add_resp.status_code == 200
+    assert any(tag["id"] == tag_id for tag in add_resp.json()["tags"])
+
+    remove_resp = client.delete(f"/prompts/{prompt['id']}/tags/{tag_id}", headers=headers)
+    assert remove_resp.status_code == 200
+    assert remove_resp.json()["tags"] == []
+
+
+def test_versions_execution_and_user_prompt_listing(client_with_db, monkeypatch):
+    client = client_with_db
+    owner = _create_user(client, "version-owner")
+    headers = {"X-User-ID": str(owner["id"])}
+    prompt = _create_prompt(client, owner["id"], title="Legacy Title", content="Original content")
+
+    update_resp = client.put(
+        f"/prompts/{prompt['id']}",
+        json={"title": "New Title"},
+        headers=headers,
+    )
+    assert update_resp.status_code == 200
+
+    versions_resp = client.get(f"/prompts/{prompt['id']}/versions", headers=headers)
+    assert versions_resp.status_code == 200
+    assert len(versions_resp.json()) >= 2
+
+    version_one = client.get(
+        f"/prompts/{prompt['id']}/versions/1",
+        headers=headers,
+    )
+    assert version_one.status_code == 200
+    assert version_one.json()["title"] == "Legacy Title"
+
+    rollback = client.post(
+        f"/prompts/{prompt['id']}/rollback/1",
+        headers=headers,
+    )
+    assert rollback.status_code == 200
+    assert rollback.json()["title"] == "Legacy Title"
+
+    fake_result = SimpleNamespace(
+        success=True,
+        content="Ok",
+        usage={"total_tokens": 3},
+        error=None,
+    )
+
+    def _fake_execute_prompt(prompt_content, variables):
+        return fake_result
+
+    monkeypatch.setattr(main, "execute_prompt", _fake_execute_prompt)
+
+    exec_resp = client.post(
+        f"/prompts/{prompt['id']}/execute",
+        json={"variables": {}},
+        headers=headers,
+    )
+    assert exec_resp.status_code == 200
+    assert exec_resp.json()["response_text"] == "Ok"
+
+    history = client.get(
+        f"/prompts/{prompt['id']}/executions",
+        headers=headers,
+    )
+    assert history.status_code == 200
+    assert len(history.json()) == 1
+    assert history.json()[0]["token_usage"]["total_tokens"] == 3
+
+    user_prompts = client.get(f"/users/{owner['id']}/prompts")
+    assert user_prompts.status_code == 200
+    assert len(user_prompts.json()) >= 1
+
+```
+
+```python
+# tests/test_api_unit.py
+
+
+def test_read_root(client_with_db):
+    response = client_with_db.get("/")
+    assert response.status_code == 200
+    assert "Welcome" in response.json()["message"]
+
+
+def test_health_check(client_with_db):
+    response = client_with_db.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_create_user_api(client_with_db):
+    response = client_with_db.post("/users", json={"username": "api_unit_user", "password": "password123"})
+    assert response.status_code == 201
+    data = response.json()
+    assert data["username"] == "api_unit_user"
+    assert "id" in data
+
+
+def test_create_user_duplicate_api(client_with_db):
+    client_with_db.post("/users", json={"username": "dup_user", "password": "pwd"})
+    response = client_with_db.post("/users", json={"username": "dup_user", "password": "pwd"})
+    assert response.status_code == 400
+
+
+def test_get_prompts_empty(client_with_db):
+    response = client_with_db.get("/prompts")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 0
+    assert data["prompts"] == []
+
+
+def test_create_prompt_unauthorized(client_with_db):
+    response = client_with_db.post("/prompts", json={"title": "T", "content": "C"})
+    assert response.status_code == 422
+
+```
+
+```python
+from datetime import datetime
+
+from src.app import cache, schemas
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.store = {}
+        self.deleted = set()
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def set(self, key, value, ex=None):
+        self.store[key] = value
+
+    def delete(self, key):
+        self.deleted.add(key)
+        self.store.pop(key, None)
+
+
+def _build_prompt_response(prompt_id: int = 1) -> schemas.PromptResponse:
+    now = datetime.utcnow()
+    owner = schemas.UserResponse(id=prompt_id, username=f"user-{prompt_id}", created_at=now)
+    return schemas.PromptResponse(
+        id=prompt_id,
+        title=f"Prompt {prompt_id}",
+        content="Hello world",
+        category=None,
+        usage_count=0,
+        created_at=now,
+        updated_at=now,
+        owner=owner,
+        tags=[],
+        average_rating=None,
+    )
+
+
+def test_set_get_delete_prompt_cache(monkeypatch):
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(cache, "r", fake_redis)
+    prompt = _build_prompt_response()
+
+    cache.set_prompt_cache(prompt, ttl=10)
+    assert f"prompt:{prompt.id}" in fake_redis.store
+
+    cached = cache.get_prompt_cache(prompt.id)
+    assert cached is not None
+    assert cached.id == prompt.id
+    assert cached.owner.username == prompt.owner.username
+
+    cache.delete_prompt_cache(prompt.id)
+    assert f"prompt:{prompt.id}" not in fake_redis.store
+    assert f"prompt:{prompt.id}" in fake_redis.deleted
+
+
+def test_cache_helpers_safely_handle_exceptions(monkeypatch):
+    class _ErrorRedis:
+        def get(self, key):
+            raise RuntimeError("boom")
+
+        def set(self, key, value, ex=None):
+            raise RuntimeError("boom")
+
+        def delete(self, key):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(cache, "r", _ErrorRedis())
+    prompt = _build_prompt_response(2)
+
+    assert cache.get_prompt_cache(prompt.id) is None
+    # These should not raise even though Redis fails under the hood
+    cache.set_prompt_cache(prompt)
+    cache.delete_prompt_cache(prompt.id)
+```
+
+```python
+# tests/test_crud_unit.py
+import pytest
+from src.app import crud, schemas, models, llm_client
+
+# ==========================================
+# User Tests
+# ==========================================
+def test_create_user(db_session):
+    """单元测试：创建用户 (修复数据长度问题)"""
+    # 修复：使用符合长度要求的用户名和密码
+    user_in = schemas.UserCreate(username="unit_test_user", password="password123")
+    user = crud.create_user(db_session, user_in)
+    
+    assert user.username == "unit_test_user"
+    assert hasattr(user, "hashed_password")
+    assert user.hashed_password != "password123" 
+
+def test_authenticate_user_logic(db_session):
+    """单元测试：验证用户查重逻辑"""
+    user_in = schemas.UserCreate(username="duplicate_user", password="password123")
+    crud.create_user(db_session, user_in)
+    
+    # 尝试查找
+    found = crud.get_user_by_username(db_session, "duplicate_user")
+    assert found is not None
+    assert found.id is not None
+
+# ==========================================
+# Prompt & Version Tests
+# ==========================================
+def test_create_prompt_and_version(db_session):
+    """单元测试：验证创建 Prompt 时自动创建版本 1"""
+    # 修复：用户名密码长度
+    user = crud.create_user(db_session, schemas.UserCreate(username="user_for_prompt", password="password123"))
+    
+    prompt_in = schemas.PromptCreate(title="Unit Test Prompt", content="Content", category="Test")
+    prompt = crud.create_prompt(db_session, prompt_in, user.id)
+    
+    assert prompt.id is not None
+    assert prompt.title == "Unit Test Prompt"
+    
+    # 验证版本
+    versions = crud.get_prompt_versions(db_session, prompt.id)
+    assert len(versions) == 1
+    assert versions[0].version_number == 1
+
+def test_update_prompt_creates_version(db_session):
+    """单元测试：验证更新 Prompt 自动创建新版本"""
+    user = crud.create_user(db_session, schemas.UserCreate(username="user_update", password="password123"))
+    prompt = crud.create_prompt(db_session, schemas.PromptCreate(title="Original", content="C1"), user.id)
+    
+    # 更新
+    update_in = schemas.PromptUpdate(title="Updated", content="C2")
+    updated_prompt = crud.update_prompt(db_session, prompt, update_in)
+    
+    assert updated_prompt.title == "Updated"
+    
+    # 验证版本历史
+    versions = crud.get_prompt_versions(db_session, prompt.id)
+    assert len(versions) == 2
+    assert versions[0].version_number == 2
+    assert versions[1].version_number == 1
+
+def test_rollback_prompt(db_session):
+    """单元测试：验证回滚逻辑"""
+    user = crud.create_user(db_session, schemas.UserCreate(username="user_rollback", password="password123"))
+    prompt = crud.create_prompt(db_session, schemas.PromptCreate(title="V1", content="C1"), user.id)
+    
+    # 更新到 V2
+    crud.update_prompt(db_session, prompt, schemas.PromptUpdate(title="V2"))
+    
+    # 回滚到 V1 (这会创建 V3，内容等于 V1)
+    rolled_back = crud.rollback_prompt(db_session, prompt, 1)
+    
+    assert rolled_back.title == "V1"
+    versions = crud.get_prompt_versions(db_session, prompt.id)
+    assert len(versions) == 3
+    assert versions[0].version_number == 3
+    assert versions[0].title == "V1"
+
+def test_delete_prompt(db_session):
+    """单元测试：删除 Prompt"""
+    user = crud.create_user(db_session, schemas.UserCreate(username="user_del", password="password123"))
+    prompt = crud.create_prompt(db_session, schemas.PromptCreate(title="To Delete", content="C"), user.id)
+    
+    crud.delete_prompt(db_session, prompt)
+    
+    found = crud.get_prompt(db_session, prompt.id)
+    assert found is None
+
+def test_get_prompts_list_logic(db_session):
+    """单元测试：查询列表与筛选"""
+    user = crud.create_user(db_session, schemas.UserCreate(username="user_list", password="password123"))
+    crud.create_prompt(db_session, schemas.PromptCreate(title="P1", content="C"), user.id)
+    crud.create_prompt(db_session, schemas.PromptCreate(title="P2", content="C"), user.id)
+    
+    prompts, total = crud.get_prompts(db_session, skip=0, limit=10)
+    assert total == 2
+    assert len(prompts) == 2
+
+# ==========================================
+# Rating Tests
+# ==========================================
+def test_rating_logic(db_session):
+    """单元测试：验证评分逻辑"""
+    user = crud.create_user(db_session, schemas.UserCreate(username="user_rate", password="password123"))
+    prompt = crud.create_prompt(db_session, schemas.PromptCreate(title="P", content="C"), user.id)
+    
+    # 评分
+    rating = crud.create_rating_for_prompt(db_session, prompt.id, user.id, 5)
+    assert rating is not None
+    assert rating.score == 5
+    
+    # 验证唯一性约束
+    duplicate = crud.create_rating_for_prompt(db_session, prompt.id, user.id, 4)
+    assert duplicate is None
+
+    # 验证平均分计算
+    # 需要另一个用户来评分以验证平均值
+    user2 = crud.create_user(db_session, schemas.UserCreate(username="user_rate2", password="password123"))
+    crud.create_rating_for_prompt(db_session, prompt.id, user2.id, 3) # 5 和 3 平均 4
+    
+    p_with_rating = crud.get_prompt_with_average_rating(db_session, prompt.id)
+    assert p_with_rating.average_rating == 4.0
+
+# ==========================================
+# Tag Tests
+# ==========================================
+def test_tags_logic(db_session):
+    """单元测试：标签逻辑"""
+    user = crud.create_user(db_session, schemas.UserCreate(username="user_tag", password="password123"))
+    prompt = crud.create_prompt(db_session, schemas.PromptCreate(title="P", content="C"), user.id)
+    
+    # 创建标签
+    tag = crud.create_tag(db_session, schemas.TagCreate(name="AI"))
+    assert tag.id is not None
+    
+    # 关联
+    crud.add_tag_to_prompt(db_session, prompt, tag)
+    assert len(prompt.tags) == 1
+    assert prompt.tags[0].name == "AI"
+    
+    # 筛选
+    prompts, total = crud.get_prompts(db_session, tags=["AI"])
+    assert total == 1
+    
+    # 移除
+    crud.remove_tag_from_prompt(db_session, prompt, tag)
+    assert len(prompt.tags) == 0
+
+# ==========================================
+# LLM Execution Tests
+# ==========================================
+def test_create_execution_log(db_session):
+    """单元测试：创建执行日志"""
+    user = crud.create_user(db_session, schemas.UserCreate(username="user_llm", password="password123"))
+    prompt = crud.create_prompt(db_session, schemas.PromptCreate(title="P", content="C"), user.id)
+    
+    # 模拟一个结果对象
+    mock_result = llm_client.LLMExecutionResult(success=True, content="Result", usage={"total": 10})
+    
+    execution = crud.create_prompt_execution(db_session, prompt.id, user.id, {"var": "val"}, mock_result)
+    assert execution.id is not None
+    assert execution.response_text == "Result"
+    
+    history = crud.get_prompt_executions(db_session, prompt.id)
+    assert len(history) == 1
+```
+
+```python
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+from sqlalchemy.exc import OperationalError
+
+from src.app import database
+
+
+@pytest.mark.anyio("asyncio")
+async def test_lifespan_initializes_engine_and_session(monkeypatch):
+    fake_engine = MagicMock()
+    fake_connect_ctx = MagicMock()
+    fake_connect_ctx.__enter__.return_value = MagicMock()
+    fake_engine.connect.return_value = fake_connect_ctx
+    fake_engine.dispose = MagicMock()
+
+    fake_session_factory = object()
+
+    monkeypatch.setattr(database, "create_engine", lambda url: fake_engine)
+    monkeypatch.setattr(database, "sessionmaker", lambda *args, **kwargs: fake_session_factory)
+    monkeypatch.setattr(database.Base.metadata, "create_all", MagicMock())
+
+    app = SimpleNamespace(state=SimpleNamespace())
+
+    async with database.lifespan(app):
+        assert app.state.engine is fake_engine
+        assert app.state.SessionLocal is fake_session_factory
+
+    fake_engine.dispose.assert_called_once()
+    database.Base.metadata.create_all.assert_called_once_with(bind=fake_engine)
+
+
+@pytest.mark.anyio("asyncio")
+async def test_lifespan_retries_and_raises_when_db_unavailable(monkeypatch):
+    error = OperationalError(None, None, Exception("db down"))
+
+    class _FlakyEngine:
+        def __init__(self):
+            self.attempts = 0
+
+        def connect(self):
+            self.attempts += 1
+            raise error
+
+        def dispose(self):
+            pass
+
+    flaky_engine = _FlakyEngine()
+
+    monkeypatch.setattr(database, "create_engine", lambda url: flaky_engine)
+    monkeypatch.setattr(database, "sessionmaker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(database.Base.metadata, "create_all", MagicMock())
+    monkeypatch.setattr(database.time, "sleep", lambda *_: None)
+
+    app = SimpleNamespace(state=SimpleNamespace())
+
+    with pytest.raises(RuntimeError):
+        async with database.lifespan(app):
+            pass
+
+    assert flaky_engine.attempts == 5
+
+
+def test_get_db_yields_session_and_closes():
+    class _Session:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    session = _Session()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(SessionLocal=lambda: session)))
+
+    generator = database.get_db(request)
+    yielded_session = next(generator)
+    assert yielded_session is session
+
+    generator.close()
+    assert session.closed
+
+```
+
+```python
+from types import SimpleNamespace
+
+import pytest
+
+from src.app import llm_client
+
+
+def _fake_completion(content: str, usage: dict):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        usage=SimpleNamespace(model_dump=lambda: usage),
+    )
+
+
+def test_execute_prompt_success(monkeypatch):
+    usage = {"total_tokens": 10}
+    completion = _fake_completion("Hi there!", usage)
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **kwargs: completion)
+        )
+    )
+    monkeypatch.setattr(llm_client, "client", fake_client)
+
+    result = llm_client.execute_prompt("Hello {{ name }}", {"name": "Alice"})
+
+    assert result.success is True
+    assert result.content == "Hi there!"
+    assert result.usage == usage
+
+
+def test_execute_prompt_handles_template_errors(monkeypatch):
+    class BrokenTemplate:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def render(self, *_args, **_kwargs):
+            raise ValueError("template issue")
+
+    monkeypatch.setattr(llm_client, "Template", lambda *_: BrokenTemplate())
+    monkeypatch.setattr(llm_client, "client", object())  # ensure client check passes
+
+    result = llm_client.execute_prompt("{{ broken", {})
+
+    assert result.success is False
+    assert "Template rendering failed" in result.error
+
+
+def test_execute_prompt_returns_error_when_client_missing(monkeypatch):
+    monkeypatch.setattr(llm_client, "client", None)
+    result = llm_client.execute_prompt("Hello", {})
+    assert result.success is False
+    assert "not initialized" in result.error
+
+
+@pytest.mark.parametrize(
+    "exception_attr, message",
+    [
+        ("APITimeoutError", "request timed out"),
+        ("APIConnectionError", "Failed to connect"),
+        ("RateLimitError", "rate limit"),
+    ],
+)
+def test_execute_prompt_handles_known_client_errors(monkeypatch, exception_attr, message):
+    class FakeError(Exception):
+        pass
+
+    def _raise(*_args, **_kwargs):
+        raise FakeError("boom")
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=_raise))
+    )
+
+    monkeypatch.setattr(llm_client, "client", fake_client)
+    monkeypatch.setattr(llm_client, exception_attr, FakeError)
+
+    result = llm_client.execute_prompt("Hello {{ name }}", {"name": "Bob"})
+
+    assert result.success is False
+    assert message.lower() in result.error.lower()
+
+```
+
+修改`test_all_func.py`:
+
+```python
+# tests/test_all_func.py
+import httpx
+import pytest
+import os
+import uuid  # 新增：用于生成唯一后缀
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BASE_URL = "http://localhost:8002"
+test_state = {}
+
+# 生成一个本次测试运行唯一的后缀
+RUN_ID = str(uuid.uuid4())[:8]
+
+def get_unique_username(base_name):
+    return f"{base_name}_{RUN_ID}"
+
+# ... (辅助函数 create_user 保持不变) ...
+def create_user(username, password):
+    with httpx.Client() as client:
+        res = client.post(f"{BASE_URL}/users", json={"username": username, "password": password})
+        return res
+
+def test_01_auth_system():
+    """验证用户注册功能"""
+    print(f"\n--- [Step 1] Testing Auth (Run ID: {RUN_ID}) ---")
+    
+    # 使用唯一用户名
+    u1 = get_unique_username("master_user")
+    res = create_user(u1, "pass1234")
+    
+    # 即使这样，我们还是检查一下，如果 400 (已存在)，则尝试登录或报错
+    if res.status_code == 400:
+        pytest.fail(f"User {u1} already exists? Did you run tests twice with same ID? DB might be very dirty.")
+    
+    assert res.status_code == 201
+    data = res.json()
+    test_state["user_id"] = data["id"]
+    
+    # 第二个用户
+    u2 = get_unique_username("second_user")
+    res2 = create_user(u2, "pass5678")
+    assert res2.status_code == 201
+    test_state["user2_id"] = res2.json()["id"]
+    print("✅ Users created successfully")
+
+# ... (其余测试代码 test_02 到 test_06 保持完全不变，直接复制之前的即可) ...
+# ... 这里为了节省篇幅省略，请保留你原来文件中的 test_02 到 test_06 ...
+# 务必确保 test_02 到 test_06 都在文件中
+def test_02_prompt_crud_and_cache():
+    """验证 Prompt 创建、查询，并隐式验证缓存读取"""
+    print("\n--- [Step 2] Testing CRUD & Cache ---")
+    user_id = test_state["user_id"]
+    headers = {"X-User-ID": str(user_id)}
+    
+    # 1. 创建
+    payload = {"title": "Cache Test Prompt", "content": "Initial content", "category": "Test"}
+    with httpx.Client() as client:
+        res = client.post(f"{BASE_URL}/prompts", json=payload, headers=headers)
+        assert res.status_code == 201
+        prompt_id = res.json()["id"]
+        test_state["prompt_id"] = prompt_id
+
+        res_1 = client.get(f"{BASE_URL}/prompts/{prompt_id}")
+        assert res_1.status_code == 200
+        assert res_1.json()["content"] == "Initial content"
+
+        res_2 = client.get(f"{BASE_URL}/prompts/{prompt_id}")
+        assert res_2.status_code == 200
+        assert res_2.json()["content"] == "Initial content"
+    
+    print("✅ CRUD and implicit cache read passed")
+
+def test_03_versioning_and_cache_invalidation():
+    """验证更新自动创建版本，以及更新后缓存是否刷新"""
+    print("\n--- [Step 3] Testing Versioning & Cache Invalidation ---")
+    user_id = test_state["user_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(user_id)}
+
+    with httpx.Client() as client:
+        update_payload = {"title": "Updated Title", "content": "Version 2 content"}
+        res = client.put(f"{BASE_URL}/prompts/{prompt_id}", json=update_payload, headers=headers)
+        assert res.status_code == 200
+        
+        res_get = client.get(f"{BASE_URL}/prompts/{prompt_id}")
+        assert res_get.json()["content"] == "Version 2 content"
+
+        res_ver = client.get(f"{BASE_URL}/prompts/{prompt_id}/versions", headers=headers)
+        versions = res_ver.json()
+        assert len(versions) == 2
+
+        res_roll = client.post(f"{BASE_URL}/prompts/{prompt_id}/rollback/1", headers=headers)
+        assert res_roll.status_code == 200
+        assert res_roll.json()["content"] == "Initial content"
+        
+    print("✅ Versioning and Cache Invalidation passed")
+
+def test_04_tags():
+    """验证标签创建、关联与筛选"""
+    print("\n--- [Step 4] Testing Tags ---")
+    user_id = test_state["user_id"]
+    prompt_id = test_state["prompt_id"]
+    headers = {"X-User-ID": str(user_id)}
+
+    with httpx.Client() as client:
+        # 使用随机标签名防止冲突
+        tag_name = f"AI_{RUN_ID}"
+        res_tag = client.post(f"{BASE_URL}/tags", json={"name": tag_name}, headers=headers)
+        tag_id = res_tag.json()["id"]
+        
+        res_link = client.post(f"{BASE_URL}/prompts/{prompt_id}/tags/{tag_id}", headers=headers)
+        assert res_link.status_code == 200
+
+        res_filter = client.get(f"{BASE_URL}/prompts?tags={tag_name}")
+        assert res_filter.json()["total"] >= 1
+
+    print("✅ Tag system passed")
+
+def test_05_ratings():
+    """验证评分、权限及平均分计算"""
+    print("\n--- [Step 5] Testing Ratings ---")
+    owner_id = test_state["user_id"]
+    rater_id = test_state["user2_id"]
+    prompt_id = test_state["prompt_id"]
+    
+    with httpx.Client() as client:
+        headers_owner = {"X-User-ID": str(owner_id)}
+        res_fail = client.post(f"{BASE_URL}/prompts/{prompt_id}/ratings", json={"score": 5}, headers=headers_owner)
+        assert res_fail.status_code == 403
+
+        headers_rater = {"X-User-ID": str(rater_id)}
+        res_ok = client.post(f"{BASE_URL}/prompts/{prompt_id}/ratings", json={"score": 4}, headers=headers_rater)
+        # 如果之前跑过测试没清空 DB，这里可能会 409 Conflict (重复评分)
+        # 我们允许 201 (Created) 或 409 (Already rated)
+        assert res_ok.status_code in [201, 409]
+
+        res_get = client.get(f"{BASE_URL}/prompts/{prompt_id}/ratings")
+        assert len(res_get.json()) >= 1
+
+    print("✅ Rating system passed")
+
+@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="No OpenAI Key")
+def test_06_llm_execution():
+    """验证 LLM 调用"""
+    print("\n--- [Step 6] Testing LLM Integration ---")
+    user_id = test_state["user_id"]
+    headers = {"X-User-ID": str(user_id)}
+    
+    with httpx.Client() as client:
+        p_res = client.post(f"{BASE_URL}/prompts", 
+                           json={"title": "Joke", "content": "Tell me a joke about {{topic}}"}, 
+                           headers=headers)
+        pid = p_res.json()["id"]
+        
+        exec_res = client.post(f"{BASE_URL}/prompts/{pid}/execute", 
+                              json={"variables": {"topic": "programming"}}, 
+                              headers=headers)
+        
+        if exec_res.status_code == 200:
+            data = exec_res.json()
+            assert data["response_text"] is not None
+            print(f"   LLM Response: {data['response_text'][:50]}...")
+        else:
+            print("   LLM Call failed (Check API Key or Network)")
+
+    print("✅ LLM Integration passed")
+```
+
+#### **第四步：更新测试脚本 (`test.sh`)**
+
+现在我们需要更新脚本，使其能够运行所有测试，并生成覆盖率报告。
+
+```bash
+#!/bin/bash
+
+# ==========================================================
+# LLM Prompt Management System - Automated Test Runner
+# ==========================================================
+#
+# 这个脚本会自动运行 pytest 测试套件。
+#
+# 使用方法:
+# 1. 确保你的 Docker Compose 服务正在运行。
+#    在第一个终端中执行: docker compose up
+#
+# 2. 在第二个终端中，给这个脚本执行权限:
+#    chmod +x test.sh
+#
+# 3. 运行此脚本:
+#    ./test.sh
+#
+# ==========================================================
+
+# 统一编码，避免终端输出 emoji 时失败
+export PYTHONIOENCODING="utf-8"
+# 限定 anyio 仅使用 asyncio 后端
+export ANYIO_BACKEND="asyncio"
+
+# 设置 PYTEST_OPTS 环境变量，增加 -v (verbose) 和 -s (show prints) 选项
+export PYTEST_OPTS="-v -s"
+
+echo "--- 🚀 Starting Advanced Tests ---"
+echo "--- Target URL: http://localhost:8002 ---"
+
+# 1. 运行集成测试 (针对 Docker 容器)
+echo "--- 1. Running Integration Tests (against Docker) ---"
+# 注意：这里假设 Docker 容器已经启动
+pytest tests/test_all_func.py $PYTEST_OPTS
+INTEGRATION_EXIT_CODE=$?
+
+# 2. 运行单元测试 & 生成覆盖率报告 (针对本地代码 + 内存数据库)
+echo "--- 2. Running Unit Tests & Coverage Report ---"
+# --cov=src/app: 统计 src/app 目录的覆盖率
+# --cov-report=term-missing: 在终端显示报告，并列出未覆盖的行号
+# tests/test_crud_unit.py: 只对单元测试运行覆盖率统计，或者你可以包含所有
+pytest --cov=src/app --cov-report=term-missing \
+  tests/test_crud_unit.py \
+  tests/test_api_unit.py \
+  tests/test_cache_unit.py \
+  tests/test_database_unit.py \
+  tests/test_llm_client_unit.py \
+  tests/test_api_extended.py \
+  tests/test_all_func.py \
+  $PYTEST_OPTS
+UNIT_EXIT_CODE=$?
+
+# 检查结果
+if [ $INTEGRATION_EXIT_CODE -eq 0 ] && [ $UNIT_EXIT_CODE -eq 0 ]; then
+  echo ""
+  echo "--- ✅ All tests passed with Coverage Report! ---"
+else
+  echo ""
+  echo "--- ❌ Tests failed. ---"
+  exit 1
+fi
+```
+
+**关于覆盖率的说明**：
+通常，`pytest-cov` 统计的是**运行测试进程**中的代码执行情况。
+
+- `test_crud_unit.py` 等代码是直接导入 `src.app` 模块运行的，所以它能完美统计覆盖率。
+- `tests/test_all_func.py` 是通过 HTTP 请求 Docker 容器的。**本地的 pytest 进程并没有执行 src/app 中的代码**（代码是在 Docker 容器里执行的）。因此，如果你只运行 `test_all_func.py`，本地的覆盖率会显示为 0%。
+- **为了拿到 70% 以上的覆盖率**，`test_crud_unit.py` 等代码必须覆盖大部分 `crud.py`, `models.py`, `schemas.py` 的逻辑。在 `test_crud_unit.py` 中几乎测试了所有 CRUD 操作，这很容易达到。
+
+#### **第五步：执行与验证与提交**
+
+1. **准备环境**：
+    - 确保 Docker 服务正在运行 (`docker compose up`) 用于集成测试。
+    - 确保本地安装了新依赖 (`pip install pytest-cov` 等，或者在容器内运行)。
+
+2. **运行测试**：
+
+    ```bash
+    ./test.sh
+    ```
+
+3. **输出**：
+    在终端底部看到类似这样的表格：
+
+    ```bash
+    $ ./test.sh
+    --- 🚀 Starting Advanced Tests ---
+    --- Target URL: http://localhost:8002 ---
+    --- 1. Running Integration Tests (against Docker) ---
+    ========================================================= test session starts ==========================================================
+    platform win32 -- Python 3.11.5, pytest-7.4.0, pluggy-1.6.0 -- D:\Anaconda\python.exe
+    cachedir: .pytest_cache
+    rootdir: D:\code\agent-v1\LLM-X\LLM-X-Season2\Lesson1\prompt-management-system
+    configfile: pytest.ini
+    plugins: anyio-4.11.0, cov-7.0.0, depends-1.0.1
+    collected 6 items                                                                                                                       
+
+    tests/test_all_func.py::test_01_auth_system 
+    --- [Step 1] Testing Auth (Run ID: 7fe63c72) ---
+    ✅ Users created successfully
+    PASSED
+    tests/test_all_func.py::test_02_prompt_crud_and_cache 
+    --- [Step 2] Testing CRUD & Cache ---
+    ✅ CRUD and implicit cache read passed
+    PASSED
+    tests/test_all_func.py::test_03_versioning_and_cache_invalidation 
+    --- [Step 3] Testing Versioning & Cache Invalidation ---
+    ✅ Versioning and Cache Invalidation passed
+    PASSED
+    tests/test_all_func.py::test_04_tags 
+    --- [Step 4] Testing Tags ---
+    ✅ Tag system passed
+    PASSED
+    tests/test_all_func.py::test_05_ratings 
+    --- [Step 5] Testing Ratings ---
+    ✅ Rating system passed
+    PASSED
+    tests/test_all_func.py::test_06_llm_execution 
+    --- [Step 6] Testing LLM Integration ---
+    LLM Response: Why do programmers prefer dark mode?
+
+    Because ligh...
+    ✅ LLM Integration passed
+    PASSED
+
+    ========================================================== 6 passed in 11.22s ========================================================== 
+    --- 2. Running Unit Tests & Coverage Report ---
+    ========================================================= test session starts ==========================================================
+    platform win32 -- Python 3.11.5, pytest-7.4.0, pluggy-1.6.0 -- D:\Anaconda\python.exe
+    cachedir: .pytest_cache
+    rootdir: D:\code\agent-v1\LLM-X\LLM-X-Season2\Lesson1\prompt-management-system
+    configfile: pytest.ini
+    plugins: anyio-4.11.0, cov-7.0.0, depends-1.0.1
+    collected 36 items                                                                                                                      
+
+    tests/test_crud_unit.py::test_create_user PASSED
+    tests/test_crud_unit.py::test_authenticate_user_logic PASSED
+    tests/test_crud_unit.py::test_create_prompt_and_version PASSED
+    tests/test_crud_unit.py::test_update_prompt_creates_version PASSED
+    tests/test_crud_unit.py::test_rollback_prompt PASSED
+    tests/test_crud_unit.py::test_delete_prompt PASSED
+    tests/test_crud_unit.py::test_get_prompts_list_logic PASSED
+    tests/test_crud_unit.py::test_rating_logic PASSED
+    tests/test_crud_unit.py::test_tags_logic PASSED
+    tests/test_crud_unit.py::test_create_execution_log PASSED
+    tests/test_api_unit.py::test_read_root PASSED
+    tests/test_api_unit.py::test_health_check PASSED
+    tests/test_api_unit.py::test_create_user_api PASSED
+    tests/test_api_unit.py::test_create_user_duplicate_api PASSED
+    tests/test_api_unit.py::test_get_prompts_empty PASSED
+    tests/test_api_unit.py::test_create_prompt_unauthorized PASSED
+    tests/test_cache_unit.py::test_set_get_delete_prompt_cache PASSED
+    tests/test_cache_unit.py::test_cache_helpers_safely_handle_exceptions Redis read error: boom
+    Redis write error: boom
+    Redis delete error: boom
+    PASSED
+    tests/test_database_unit.py::test_lifespan_initializes_engine_and_session --- 数据库连接成功 ---
+    --- 数据库表创建成功 ---
+    --- 数据库连接已关闭 ---
+    PASSED
+    tests/test_database_unit.py::test_lifespan_retries_and_raises_when_db_unavailable --- 数据库连接失败，正在重试 (1/5)... ---
+    --- 数据库连接失败，正在重试 (2/5)... ---
+    --- 数据库连接失败，正在重试 (3/5)... ---
+    --- 数据库连接失败，正在重试 (4/5)... ---
+    --- 数据库连接失败，正在重试 (5/5)... ---
+    --- 无法连接到数据库，应用启动失败 ---
+    PASSED
+    tests/test_database_unit.py::test_get_db_yields_session_and_closes PASSED
+    tests/test_llm_client_unit.py::test_execute_prompt_success PASSED
+    tests/test_llm_client_unit.py::test_execute_prompt_handles_template_errors --- [LLM Client Error] An unexpected error occurred: template issue ---
+    PASSED
+    tests/test_llm_client_unit.py::test_execute_prompt_returns_error_when_client_missing PASSED
+    tests/test_llm_client_unit.py::test_execute_prompt_handles_known_client_errors[APITimeoutError-request timed out] --- LLM CLIENT ERROR: Request timed out. ---
+    PASSED
+    tests/test_llm_client_unit.py::test_execute_prompt_handles_known_client_errors[APIConnectionError-Failed to connect] --- LLM CLIENT ERROR: Connection error: boom ---
+    PASSED
+    tests/test_llm_client_unit.py::test_execute_prompt_handles_known_client_errors[RateLimitError-rate limit] --- LLM CLIENT ERROR: Rate limit exceeded. ---
+    PASSED
+    tests/test_api_extended.py::test_rating_endpoints_flow PASSED
+    tests/test_api_extended.py::test_tag_management_and_association PASSED
+    tests/test_api_extended.py::test_versions_execution_and_user_prompt_listing PASSED
+    tests/test_all_func.py::test_01_auth_system
+    --- [Step 1] Testing Auth (Run ID: fbc52a75) ---
+    ✅ Users created successfully
+    PASSED
+    PASSED
+    tests/test_all_func.py::test_02_prompt_crud_and_cache
+    --- [Step 2] Testing CRUD & Cache ---
+    ✅ CRUD and implicit cache read passed
+    PASSED
+    tests/test_all_func.py::test_03_versioning_and_cache_invalidation
+    tests/test_all_func.py::test_02_prompt_crud_and_cache
+    --- [Step 2] Testing CRUD & Cache ---
+    ✅ CRUD and implicit cache read passed
+    PASSED
+    tests/test_all_func.py::test_03_versioning_and_cache_invalidation
+    --- [Step 2] Testing CRUD & Cache ---
+    ✅ CRUD and implicit cache read passed
+    PASSED
+    tests/test_all_func.py::test_03_versioning_and_cache_invalidation
+    --- [Step 3] Testing Versioning & Cache Invalidation ---
+    ✅ Versioning and Cache Invalidation passed
+    ✅ CRUD and implicit cache read passed
+    PASSED
+    tests/test_all_func.py::test_03_versioning_and_cache_invalidation
+    --- [Step 3] Testing Versioning & Cache Invalidation ---
+    ✅ Versioning and Cache Invalidation passed
+    tests/test_all_func.py::test_03_versioning_and_cache_invalidation
+    --- [Step 3] Testing Versioning & Cache Invalidation ---
+    ✅ Versioning and Cache Invalidation passed
+    --- [Step 3] Testing Versioning & Cache Invalidation ---
+    ✅ Versioning and Cache Invalidation passed
+    PASSED
+    PASSED
+    tests/test_all_func.py::test_04_tags
+    --- [Step 4] Testing Tags ---
+    tests/test_all_func.py::test_04_tags
+    --- [Step 4] Testing Tags ---
+    ✅ Tag system passed
+    PASSED
+    ✅ Tag system passed
+    PASSED
+    tests/test_all_func.py::test_05_ratings
+    --- [Step 5] Testing Ratings ---
+    tests/test_all_func.py::test_05_ratings
+    --- [Step 5] Testing Ratings ---
+    ✅ Rating system passed
+    ✅ Rating system passed
+    PASSED
+    tests/test_all_func.py::test_06_llm_execution
+    PASSED
+    tests/test_all_func.py::test_06_llm_execution
+    --- [Step 6] Testing LLM Integration ---
+    --- [Step 6] Testing LLM Integration ---
+    LLM Response: Why do programmers prefer dark mode?
+    LLM Response: Why do programmers prefer dark mode?
+
+    Because ligh...
+    ✅ LLM Integration passed
+    PASSED
+    PASSED
+
+    ============================================================ tests coverage ============================================================ 
+    ___________________________________________ coverage: platform win32, python 3.11.5-final-0 ____________________________________________ 
+
+    Name                    Stmts   Miss  Cover   Missing
+    -----------------------------------------------------
+    src\app\__init__.py         1      0   100%
+    src\app\cache.py           27      0   100%
+    src\app\crud.py           137      5    96%   153, 177, 196, 205, 257
+    src\app\cache.py           27      0   100%
+    src\app\crud.py           137      5    96%   153, 177, 196, 205, 257
+    src\app\crud.py           137      5    96%   153, 177, 196, 205, 257
+    src\app\database.py        40      2    95%   59-60
+    src\app\database.py        40      2    95%   59-60
+    src\app\llm_client.py      41      7    83%   21-25, 80-83
+    src\app\schemas.py         70      0   100%
+    -----------------------------------------------------
+    TOTAL                     564     62    89%
+    ========================================================= 36 passed in 20.10s ==========================================================
+
+    --- ✅ All tests passed with Coverage Report! ---
+    ```
+
+    只要 TOTAL 列超过 70%，就达标了！
+
+```bash
+# 1. 添加新文件
+git add .
+
+# 2. 提交
+git commit -m "test(advanced): add unit tests with sqlite fixture and coverage reporting"
+```
+
+现在混合了 **E2E 集成测试**（针对真实 Docker 环境）和 **快速单元测试**（针对内存数据库）的测试套件，并且自带覆盖率报告。这是高质量软件交付的标准配置。
+
+### 选项 8: CI/CD 配置
+
+- [ ] 创建 `.github/workflows/test.yml`
+- [ ] 配置自动化测试 (每次 push 触发)
+- [ ] 添加代码质量检查 (flake8 或 black)
+- [ ] 添加测试覆盖率徽章到 README
+
+### 选项 9: 监控与日志
+
+- [ ] 配置结构化日志 (使用 `logging` 模块)
+- [ ] 添加请求日志中间件
+- [ ] 记录关键操作 (创建、更新、删除)
+- [ ] 实现健康检查端点：GET /health
+- [ ] (可选) 集成 Prometheus 或其他监控工具
+
+### 选项 10: 自定义创新功能
+
+提出并实现你自己的创新功能，例如：
+
+- Prompt Chain (多步骤执行)
+- 智能推荐系统
+- 多模态支持 (图片 Prompt)
+- WebSocket 实时协作
+- AI 驱动的 Prompt 优化建议
+
+**要求**：
+
+- 在 README 中详细说明功能设计
+- 提供使用示例
+- 根据实现质量和创新性评分

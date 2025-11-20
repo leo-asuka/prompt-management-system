@@ -1,7 +1,6 @@
 # src/app/models.py
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Table, JSON, UniqueConstraint
-from sqlalchemy.orm import relationship  # 导入 relationship
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, declarative_base  # 导入 relationship
 from datetime import datetime
 
 Base = declarative_base()

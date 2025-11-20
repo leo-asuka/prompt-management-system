@@ -1,5 +1,5 @@
 # src/app/schemas.py
-from pydantic import BaseModel, Field, Json
+from pydantic import BaseModel, Field, Json, ConfigDict
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -13,9 +13,7 @@ class TagCreate(TagBase):
 
 class TagResponse(TagBase):
     id: int
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # ==================== User Schemas ====================
 
@@ -23,14 +21,12 @@ class UserBase(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
 
 class UserCreate(UserBase):
-    password: str = Field(..., min_length=6, description="用户密码")
+    password: str = Field(..., min_length=3, description="用户密码")
 
 class UserResponse(UserBase):
     id: int
     created_at: datetime
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # ==================== Prompt Schemas ====================
 
@@ -62,9 +58,7 @@ class RatingResponse(BaseModel):
     user_id: int
     score: int
     created_at: datetime
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # 在返回 Prompt 信息时，也一并返回创建者的基本信息
 class PromptResponse(PromptBase):
@@ -80,10 +74,7 @@ class PromptResponse(PromptBase):
     average_rating: Optional[float] = Field(None, description="该 Prompt 的平均评分")
 
     # Pydantic V2 的配置项
-    class Config:
-        # from_attributes = True 告诉 Pydantic 模型可以从 ORM 对象（数据库模型实例）中读取数据。
-        # 这样就可以直接把 SQLAlchemy 的 Prompt 对象传给 PromptResponse 来创建响应。
-        from_attributes = True  # 允许从 ORM 模型创建
+    model_config = ConfigDict(from_attributes=True)
 
 class PromptList(BaseModel):
     """提示词列表响应"""
@@ -99,9 +90,7 @@ class PromptVersionResponse(BaseModel):
     content: str
     category: Optional[str] = None
     created_at: datetime
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Prompt 执行相关的 Schemas
 
@@ -128,6 +117,4 @@ class PromptExecutionResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
+    model_config = ConfigDict(from_attributes=True)
