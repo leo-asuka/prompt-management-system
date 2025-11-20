@@ -7,6 +7,7 @@ from sqlalchemy.exc import OperationalError
 from src.app import database
 from src.app import models
 
+
 @pytest.mark.anyio("asyncio")
 async def test_lifespan_initializes_engine_and_session(monkeypatch):
     fake_engine = MagicMock()
