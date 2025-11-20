@@ -6,7 +6,7 @@ from typing import List, Optional
 from . import models, schemas, llm_client, cache
 from .models import Prompt
 import bcrypt
-from .logger import logger # 导入 logger
+from .logger import logger  # 导入 logger
 
 
 def _hash_password(password: str) -> str:
@@ -128,9 +128,7 @@ def create_prompt(db: Session, prompt: schemas.PromptCreate, user_id: int):
     )
     db.add(db_prompt)  # 将新对象添加到 Session 中（暂存）
     db.commit()  # 将暂存的更改提交到数据库
-    db.refresh(
-        db_prompt
-    )  # 刷新 db_prompt 对象，以获取数据库生成的值（如 id, created_at）
+    db.refresh(db_prompt)  # 刷新 db_prompt 对象，以获取数据库生成的值（如 id, created_at）
     # 2. 创建版本 1 快照
     version = models.PromptVersion(
         prompt_id=db_prompt.id,
@@ -147,8 +145,8 @@ def create_prompt(db: Session, prompt: schemas.PromptCreate, user_id: int):
             "action": "create_prompt",
             "prompt_id": db_prompt.id,
             "user_id": user_id,
-            "title": db_prompt.title
-        }
+            "title": db_prompt.title,
+        },
     )
     return db_prompt
 
@@ -282,8 +280,8 @@ def update_prompt(
         extra={
             "action": "update_prompt",
             "prompt_id": db_prompt.id,
-            "new_version": new_version.version_number
-        }
+            "new_version": new_version.version_number,
+        },
     )
     # 清除缓存，因为数据变了，旧的缓存已经脏了，必须删除
     cache.delete_prompt_cache(db_prompt.id)
@@ -376,8 +374,8 @@ def create_prompt_execution(
             "action": "execute_prompt",
             "prompt_id": prompt_id,
             "user_id": user_id,
-            "tokens": result.usage
-        }
+            "tokens": result.usage,
+        },
     )
     return db_execution
 
