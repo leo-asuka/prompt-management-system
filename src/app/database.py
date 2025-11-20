@@ -1,15 +1,12 @@
 # src/app/database.py
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError
 from fastapi import Request
 from contextlib import asynccontextmanager
 import time
 
 from .config import settings
-
-# 导入数据模型中定义的 Base
-from .models import Base
 
 # 数据库引擎和会话工厂
 # 将 engine 和 SessionLocal 定义在模块级别，这样 get_db 就可以直接访问它们
@@ -23,6 +20,7 @@ from .models import Base
 # autocommit=False 和 autoflush=False 是推荐的默认设置。事务需要手动提交。
 # SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+
 # 在应用启动和关闭时执行的生命周期事件
 @asynccontextmanager
 async def lifespan(app):
@@ -31,14 +29,16 @@ async def lifespan(app):
     app.state.engine = create_engine(settings.database_url)
 
     # 创建Session工厂
-    app.state.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=app.state.engine)
+    app.state.SessionLocal = sessionmaker(
+        autocommit=False, autoflush=False, bind=app.state.engine
+    )
 
     # 尝试连接数据库，最多重试5次 (给数据库启动时间)
     max_retries = 5
     retries = 0
     while retries < max_retries:
         try:
-            with app.state.engine.connect() as connection:
+            with app.state.engine.connect() as _:
                 print("--- 数据库连接成功 ---")
                 break  # 连接成功，跳出循环
         except OperationalError:
@@ -54,6 +54,7 @@ async def lifespan(app):
     # 创建数据库表（如果不存在）
     try:
         from .models import Base
+
         Base.metadata.create_all(bind=app.state.engine)
         print("--- 数据库表创建成功 ---")
     except Exception as e:

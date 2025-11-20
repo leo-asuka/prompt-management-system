@@ -14,7 +14,9 @@ def test_health_check(client_with_db):
 
 
 def test_create_user_api(client_with_db):
-    response = client_with_db.post("/users", json={"username": "api_unit_user", "password": "password123"})
+    response = client_with_db.post(
+        "/users", json={"username": "api_unit_user", "password": "password123"}
+    )
     assert response.status_code == 201
     data = response.json()
     assert data["username"] == "api_unit_user"
@@ -23,7 +25,9 @@ def test_create_user_api(client_with_db):
 
 def test_create_user_duplicate_api(client_with_db):
     client_with_db.post("/users", json={"username": "dup_user", "password": "pwd"})
-    response = client_with_db.post("/users", json={"username": "dup_user", "password": "pwd"})
+    response = client_with_db.post(
+        "/users", json={"username": "dup_user", "password": "pwd"}
+    )
     assert response.status_code == 400
 
 

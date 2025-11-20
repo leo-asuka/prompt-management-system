@@ -9,7 +9,6 @@ from src.app.database import Base, get_db
 from src.app.main import app
 
 from unittest.mock import MagicMock
-import sys
 
 # ==========================================
 # 1. 数据库 Fixture (用于单元测试)
@@ -27,6 +26,7 @@ engine = create_engine(
 
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+
 @pytest.fixture(scope="function")
 def db_session():
     """
@@ -35,7 +35,7 @@ def db_session():
     """
     # 创建所有表结构
     Base.metadata.create_all(bind=engine)
-    
+
     session = TestingSessionLocal()
     try:
         yield session
@@ -43,6 +43,7 @@ def db_session():
         session.close()
         # 删除所有表，确保测试隔离
         Base.metadata.drop_all(bind=engine)
+
 
 # ==========================================
 # 2. 集成测试 Fixture (可选，用于 API 测试)
@@ -61,10 +62,10 @@ def mock_redis_cache(monkeypatch):
     """
     # 模拟 cache.py 中的函数
     mock_cache = MagicMock()
-    mock_cache.get_prompt_cache.return_value = None # 模拟缓存未命中
+    mock_cache.get_prompt_cache.return_value = None  # 模拟缓存未命中
     mock_cache.set_prompt_cache.return_value = None
     mock_cache.delete_prompt_cache.return_value = None
-    
+
     # 将 src.app.cache 替换为 mock 对象
     monkeypatch.setattr("src.app.crud.cache", mock_cache)
 

@@ -5531,14 +5531,203 @@ git add .
 git commit -m "test(advanced): add unit tests with sqlite fixture and coverage reporting"
 ```
 
-现在混合了 **E2E 集成测试**（针对真实 Docker 环境）和 **快速单元测试**（针对内存数据库）的测试套件，并且自带覆盖率报告。这是高质量软件交付的标准配置。
+现在混合了 **E2E Docker 集成测试**（针对真实 Docker 环境）和 **CRUD 数据库单元测试**（针对内存数据库）的测试套件，并且自带覆盖率报告。API 路由单元测试、Redis Mocking、高覆盖率报告。
 
-### 选项 8: CI/CD 配置
+### 8.目标：CI/CD 配置
 
-- [ ] 创建 `.github/workflows/test.yml`
-- [ ] 配置自动化测试 (每次 push 触发)
-- [ ] 添加代码质量检查 (flake8 或 black)
-- [ ] 添加测试覆盖率徽章到 README
+配置 GitHub Actions，使得每次你向 GitHub 推送代码时，云端都会自动运行你的测试套件，并检查代码风格。
+
+#### **第一步：准备代码质量检查工具**
+
+在将配置文件推送到 GitHub 之前，我们需要确保你的代码在本地是符合规范的，否则 CI 会直接报错。
+
+使用：
+
+- **Black**: 自动格式化代码（不用纠结缩进和空格）。
+- **Flake8**: 检查代码逻辑错误和风格问题（如未使用的变量）。
+
+1. **在本地安装工具**：
+
+    ```bash
+    pip install black flake8
+    ```
+
+2. **配置 Flake8**：
+    在项目根目录创建一个名为 `.flake8` 的文件，内容如下（为了兼容 Black 的行长限制）：
+
+    ```ini
+    [flake8]
+    max-line-length = 88
+    extend-ignore = E203
+    exclude = .git,__pycache__,.venv,venv,.pytest_cache
+    ```
+
+3. **在本地运行并修复**：
+
+    ```bash
+    # 1. 自动格式化所有代码
+    black src tests
+
+    # 2. 检查潜在错误
+    flake8 src tests
+    ```
+
+#### **第二步：创建 GitHub Actions Workflow**
+
+这是 CI/CD 的核心。
+
+1. 在项目根目录创建目录：`.github/workflows` (注意是两级目录)。
+2. 在该目录下创建文件 `test.yml`。
+
+**文件路径**: `.github/workflows/test.yml`
+
+```yaml
+name: CI/CD Pipeline
+
+# 触发条件：推送到 master 分支，或者提交 Pull Request
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. 拉取代码
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # 2. 设置 Python 环境
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    # 3. 安装依赖 (包括项目依赖和测试工具)
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # 安装代码质量工具
+        pip install black flake8
+        # 安装项目运行和测试所需的依赖
+        # (由于我们没有 requirements.txt，这里手动列出关键依赖，
+        #  更规范的做法是导出 requirements.txt 或使用 pdm install)
+        pip install fastapi uvicorn pydantic-settings psycopg2-binary sqlalchemy \
+                    bcrypt openai redis httpx pytest pytest-cov pytest-depends \
+                    python-dotenv
+
+    # 4. 代码质量检查 (Linting)
+    - name: Check code formatting with Black
+      run: black --check src tests
+    
+    - name: Check code style with Flake8
+      run: flake8 src tests
+
+    # 5. 启动 Docker 服务 (Postgres & Redis)
+    - name: Start Services using Docker Compose
+      run: |
+        # 创建临时的 .env 文件供 Docker 使用
+        cp .env.example .env
+        # 启动数据库和Redis，但不启动API容器(我们使用本地环境跑测试连接Docker数据库)
+        docker compose up -d db redis
+        # 等待服务就绪
+        sleep 10
+
+    # 6. 运行测试套件
+    - name: Run Tests with Coverage
+      env:
+        # 在 CI 中设置假的 OpenAI Key 以跳过真实调用测试
+        # 或者在这里配置 GitHub Secrets: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_API_KEY: "sk-dummy-key-for-ci" 
+        # 告诉测试代码连接本地暴露的端口
+        DATABASE_URL: "postgresql://myuser:mypassword123@localhost:5432/ai_eng_db"
+        REDIS_URL: "redis://localhost:6379/0"
+      run: |
+        # 给脚本权限
+        chmod +x test.sh
+        # 运行测试脚本 (test.sh 内部会运行 pytest)
+        # 注意：因为我们在本地环境运行 pytest，所以它会连接 localhost 的 Docker 端口
+        ./test.sh
+```
+
+#### **第三步：添加测试覆盖率徽章到 README**
+
+为了简单起见（不配置复杂的第三方服务），添加两个徽章：
+
+1. **CI 构建状态**：显示 GitHub Actions 是否通过。
+2. **覆盖率**：手动添加一个静态徽章（因为已经确认是 89%）。
+
+在 `README.md` 文件的最顶部（标题下方）添加以下内容：
+
+```markdown
+# LLM Prompt 管理系统
+
+![CI Status](https://github.com/<你的GitHub用户名>/<仓库名>/actions/workflows/test.yml/badge.svg)
+![Coverage](https://img.shields.io/badge/Coverage-89%25-brightgreen)
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.111.0-009688)
+
+... (其余内容)
+```
+
+*注意：在 GitHub 上创建仓库 (如果你还没做)，登录你的 GitHub 账号。点击右上角的 + 号，选择 "New repository"。Repository name: 建议填写 prompt-management-system (或者你喜欢的名字)。Public/Private: 选择 Public (公开) 或 Private (私有) 都可以。不要 勾选 "Add a README file", ".gitignore", "License" (因为你本地已经有了)。点击 "Create repository"。仓库链接 `https://github.com/leo-asuka/<你的仓库名>` ,请将 `<你的GitHub用户名>`(`leo-asuka`) 和 `<仓库名>`(`<你的仓库名>`) 替换为你真实的 GitHub 信息。*
+
+->
+
+```md
+# LLM Prompt 管理系统
+
+![CI Status](https://github.com/leo-asuka/prompt-management-system/actions/workflows/test.yml/badge.svg)
+![Coverage](https://img.shields.io/badge/Coverage-89%25-brightgreen)
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.111.0-009688)
+```
+
+#### **第四步：提交并触发 CI**
+
+现在，让我们把所有东西提交上去，看看 GitHub Actions 是否会跑起来。
+
+“建桥” (初始化)
+
+```bash
+# 1. 关联远程仓库 (只需执行一次)
+# 注意：如果你起的仓库名不是 prompt-management-system，请修改下面的链接
+git remote add origin https://github.com/leo-asuka/prompt-management-system.git
+
+# 2. 确保当前分支名为 master (或者 main)
+git branch -M master
+
+# 3. 推送代码
+git push -u origin master
+```
+
+“运货” (日常开发)
+
+```bash
+# 1. 添加配置文件
+git add .
+
+# 2. 提交
+git commit -m "ci: add github actions workflow with linting and testing, update readme badges"
+
+# 3. 推送到 GitHub (如果你还没有关联远程仓库，请先关联)
+# git remote add origin <你的仓库地址>
+git push origin master
+```
+
+#### **结果**
+
+1. 当你 `git push` 后，去你的 GitHub 仓库页面。
+2. 点击顶部的 **"Actions"** 标签。
+3. 你应该能看到一个名为 "CI/CD Pipeline" 的 Workflow 正在运行。
+4. 点进去，你会看到 `Linting` 和 `Run Tests` 等步骤。
+5. 如果一切顺利，它会变成绿色的 **Success** ✅。
+6. 你的 `README.md` 上的 "CI Status" 徽章也会变成绿色的 "passing"。
+
+一套完整的、自动化的持续集成流水线完成。
 
 ### 选项 9: 监控与日志
 

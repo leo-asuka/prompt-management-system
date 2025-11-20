@@ -1,4 +1,9 @@
-# AI工程：第1周 课程代码 LLM Prompt 管理系统 (LLM Prompt Management System)
+# LLM Prompt 管理系统
+
+![CI Status](https://github.com/<你的GitHub用户名>/<仓库名>/actions/workflows/test.yml/badge.svg)
+![Coverage](https://img.shields.io/badge/Coverage-89%25-brightgreen)
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.111.0-009688)
 
 本项目是一个基于 FastAPI 和 PostgreSQL 的后端服务，旨在提供一个功能完整、易于扩展的 LLM (大型语言模型) Prompt 管理系统。通过 RESTful API，用户可以对 Prompt 进行创建、读取、更新和删除 (CRUD) 操作。
 

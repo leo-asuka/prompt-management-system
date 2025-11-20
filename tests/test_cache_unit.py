@@ -21,7 +21,9 @@ class _FakeRedis:
 
 def _build_prompt_response(prompt_id: int = 1) -> schemas.PromptResponse:
     now = datetime.utcnow()
-    owner = schemas.UserResponse(id=prompt_id, username=f"user-{prompt_id}", created_at=now)
+    owner = schemas.UserResponse(
+        id=prompt_id, username=f"user-{prompt_id}", created_at=now
+    )
     return schemas.PromptResponse(
         id=prompt_id,
         title=f"Prompt {prompt_id}",

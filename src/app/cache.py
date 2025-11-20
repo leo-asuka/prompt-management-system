@@ -1,12 +1,12 @@
 # src/app/cache.py
 import redis
-import json
 from .config import settings
 from . import schemas
 
 # 初始化 Redis 客户端
 # decode_responses=True 让 redis 直接返回字符串而不是 bytes
 r = redis.from_url(settings.REDIS_URL, decode_responses=True)
+
 
 def get_prompt_cache(prompt_id: int):
     """尝试从缓存获取 Prompt"""
@@ -20,6 +20,7 @@ def get_prompt_cache(prompt_id: int):
         print(f"Redis read error: {e}")
     return None
 
+
 def set_prompt_cache(prompt: schemas.PromptResponse, ttl: int = 300):
     """
     将 Prompt 写入缓存
@@ -32,6 +33,7 @@ def set_prompt_cache(prompt: schemas.PromptResponse, ttl: int = 300):
         r.set(key, json_data, ex=ttl)
     except Exception as e:
         print(f"Redis write error: {e}")
+
 
 def delete_prompt_cache(prompt_id: int):
     """删除缓存 (用于更新或删除时失效缓存)"""

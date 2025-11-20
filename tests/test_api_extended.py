@@ -1,7 +1,4 @@
 from types import SimpleNamespace
-
-import pytest
-
 from src.app import main
 
 
@@ -13,7 +10,9 @@ def _create_user(client, username: str):
 
 def _create_prompt(client, owner_id: int, title="Title", content="Content"):
     headers = {"X-User-ID": str(owner_id)}
-    response = client.post("/prompts", json={"title": title, "content": content}, headers=headers)
+    response = client.post(
+        "/prompts", json={"title": title, "content": content}, headers=headers
+    )
     assert response.status_code == 201
     return response.json()
 
@@ -71,7 +70,9 @@ def test_tag_management_and_association(client_with_db):
     assert add_resp.status_code == 200
     assert any(tag["id"] == tag_id for tag in add_resp.json()["tags"])
 
-    remove_resp = client.delete(f"/prompts/{prompt['id']}/tags/{tag_id}", headers=headers)
+    remove_resp = client.delete(
+        f"/prompts/{prompt['id']}/tags/{tag_id}", headers=headers
+    )
     assert remove_resp.status_code == 200
     assert remove_resp.json()["tags"] == []
 
@@ -80,7 +81,9 @@ def test_versions_execution_and_user_prompt_listing(client_with_db, monkeypatch)
     client = client_with_db
     owner = _create_user(client, "version-owner")
     headers = {"X-User-ID": str(owner["id"])}
-    prompt = _create_prompt(client, owner["id"], title="Legacy Title", content="Original content")
+    prompt = _create_prompt(
+        client, owner["id"], title="Legacy Title", content="Original content"
+    )
 
     update_resp = client.put(
         f"/prompts/{prompt['id']}",

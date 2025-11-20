@@ -7,6 +7,7 @@ from . import models, schemas, llm_client, cache
 from .models import Prompt
 import bcrypt
 
+
 def _hash_password(password: str) -> str:
     """使用 bcrypt 生成一个哈希字符串，兼容当前依赖版本。"""
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -14,9 +15,11 @@ def _hash_password(password: str) -> str:
 
 # ==================== User CRUD ====================
 
+
 def get_user_by_username(db: Session, username: str):
     """根据用户名查询用户"""
     return db.query(models.User).filter(models.User.username == username).first()
+
 
 def create_user(db: Session, user: schemas.UserCreate):
     """创建新用户，并哈希密码"""
@@ -27,19 +30,24 @@ def create_user(db: Session, user: schemas.UserCreate):
     db.refresh(db_user)
     return db_user
 
+
 # ==================== Tag CRUD====================
+
 
 def get_tag(db: Session, tag_id: int):
     """根据 ID 获取标签"""
     return db.query(models.Tag).filter(models.Tag.id == tag_id).first()
 
+
 def get_tag_by_name(db: Session, name: str):
     """根据名称获取标签"""
     return db.query(models.Tag).filter(models.Tag.name == name).first()
 
+
 def get_tags(db: Session, skip: int = 0, limit: int = 100):
     """获取标签列表"""
     return db.query(models.Tag).offset(skip).limit(limit).all()
+
 
 def create_tag(db: Session, tag: schemas.TagCreate):
     """创建新标签"""
@@ -49,6 +57,7 @@ def create_tag(db: Session, tag: schemas.TagCreate):
     db.refresh(db_tag)
     return db_tag
 
+
 def add_tag_to_prompt(db: Session, db_prompt: models.Prompt, db_tag: models.Tag):
     """为 Prompt 添加一个标签"""
     if db_tag not in db_prompt.tags:
@@ -56,6 +65,7 @@ def add_tag_to_prompt(db: Session, db_prompt: models.Prompt, db_tag: models.Tag)
         db.commit()
         db.refresh(db_prompt)
     return db_prompt
+
 
 def remove_tag_from_prompt(db: Session, db_prompt: models.Prompt, db_tag: models.Tag):
     """从 Prompt 移除一个标签"""
@@ -65,9 +75,13 @@ def remove_tag_from_prompt(db: Session, db_prompt: models.Prompt, db_tag: models
         db.refresh(db_prompt)
     return db_prompt
 
+
 # ==================== Rating CRUD ====================
 
-def create_rating_for_prompt(db: Session, prompt_id: int, user_id: int, score: int) -> Optional[models.Rating]:
+
+def create_rating_for_prompt(
+    db: Session, prompt_id: int, user_id: int, score: int
+) -> Optional[models.Rating]:
     """为一个 Prompt 创建一条新的用户评分记录。"""
     db_rating = models.Rating(prompt_id=prompt_id, user_id=user_id, score=score)
     db.add(db_rating)
@@ -75,17 +89,23 @@ def create_rating_for_prompt(db: Session, prompt_id: int, user_id: int, score: i
         db.commit()
         db.refresh(db_rating)
         return db_rating
-    except IntegrityError: # 捕获违反唯一约束的异常
+    except IntegrityError:  # 捕获违反唯一约束的异常
         db.rollback()
         return None
 
-def get_ratings_for_prompt(db: Session, prompt_id: int, skip: int = 0, limit: int = 100):
+
+def get_ratings_for_prompt(
+    db: Session, prompt_id: int, skip: int = 0, limit: int = 100
+):
     """获取指定 Prompt 的所有评分记录。"""
-    return db.query(models.Rating)\
-             .filter(models.Rating.prompt_id == prompt_id)\
-             .offset(skip)\
-             .limit(limit)\
-             .all()
+    return (
+        db.query(models.Rating)
+        .filter(models.Rating.prompt_id == prompt_id)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
 
 # ==================== Prompt CRUD ====================
 # 创建 Prompt 时需要知道是哪个用户创建的
@@ -106,23 +126,31 @@ def create_prompt(db: Session, prompt: schemas.PromptCreate, user_id: int):
         user_id=user_id,
     )
     db.add(db_prompt)  # 将新对象添加到 Session 中（暂存）
-    db.commit()      # 将暂存的更改提交到数据库
-    db.refresh(db_prompt) # 刷新 db_prompt 对象，以获取数据库生成的值（如 id, created_at）
+    db.commit()  # 将暂存的更改提交到数据库
+    db.refresh(db_prompt)  # 刷新 db_prompt 对象，以获取数据库生成的值（如 id, created_at）
     # 2. 创建版本 1 快照
     version = models.PromptVersion(
         prompt_id=db_prompt.id,
         version_number=1,
         title=db_prompt.title,
         content=db_prompt.content,
-        category=db_prompt.category
+        category=db_prompt.category,
     )
     db.add(version)
     db.commit()
     return db_prompt
 
+
 def get_prompts_by_user(db: Session, user_id: int, skip: int = 0, limit: int = 100):
     """获取指定用户的所有 Prompts"""
-    return db.query(models.Prompt).filter(models.Prompt.user_id == user_id).offset(skip).limit(limit).all()
+    return (
+        db.query(models.Prompt)
+        .filter(models.Prompt.user_id == user_id)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
 
 # 更新：get_prompts 函数
 def get_prompts(
@@ -130,24 +158,22 @@ def get_prompts(
     skip: int = 0,
     limit: int = 100,
     tags: Optional[List[str]] = None,
-    sort: Optional[str] = None
+    sort: Optional[str] = None,
 ):
     avg_rating = func.avg(models.Rating.score).label("average_rating")
-    
-    base_query = db.query(models.Prompt)\
-                   .outerjoin(models.Rating)
+
+    base_query = db.query(models.Prompt).outerjoin(models.Rating)
 
     if tags:
         for tag_name in tags:
             base_query = base_query.filter(models.Prompt.tags.any(name=tag_name))
-    
+
     # 先计算总数
     total_query = base_query.group_by(models.Prompt.id)
     total = total_query.count()
 
     # 现在构建包含聚合和排序的主查询
-    main_query = base_query.add_columns(avg_rating)\
-                           .group_by(models.Prompt.id)
+    main_query = base_query.add_columns(avg_rating).group_by(models.Prompt.id)
 
     if sort == "rating":
         main_query = main_query.order_by(avg_rating.desc().nullslast())
@@ -155,7 +181,7 @@ def get_prompts(
         main_query = main_query.order_by(models.Prompt.created_at.desc())
 
     results = main_query.offset(skip).limit(limit).all()
-    
+
     prompts_with_ratings = []
     for prompt, rating in results:
         prompt.average_rating = rating if rating is not None else 0.0
@@ -163,9 +189,11 @@ def get_prompts(
 
     return prompts_with_ratings, total
 
+
 def get_prompt(db: Session, prompt_id: int):
     """根据 ID 查询单个 Prompt。.first() 表示只返回第一条匹配的记录，如果没有找到则返回 None。"""
     return db.query(Prompt).filter(Prompt.id == prompt_id).first()
+
 
 # 1. 优化 get_prompt_with_average_rating (读操作)
 def get_prompt_with_average_rating(db: Session, prompt_id: int):
@@ -177,11 +205,13 @@ def get_prompt_with_average_rating(db: Session, prompt_id: int):
         return cached_prompt
     # --- 步骤 2: 缓存未命中，查询数据库 ---
     avg_rating = func.avg(models.Rating.score).label("average_rating")
-    result = db.query(models.Prompt, avg_rating)\
-               .outerjoin(models.Rating)\
-               .filter(models.Prompt.id == prompt_id)\
-               .group_by(models.Prompt.id)\
-               .first()
+    result = (
+        db.query(models.Prompt, avg_rating)
+        .outerjoin(models.Rating)
+        .filter(models.Prompt.id == prompt_id)
+        .group_by(models.Prompt.id)
+        .first()
+    )
 
     if result:
         prompt, rating = result
@@ -191,13 +221,19 @@ def get_prompt_with_average_rating(db: Session, prompt_id: int):
         # 注意：这里需要手动构建一下 schema 对象，或者利用 from_attributes
         prompt_schema = schemas.PromptResponse.model_validate(prompt)
         cache.set_prompt_cache(prompt_schema)
-        
+
         return prompt
     return None
 
+
 # 2. 优化 update_prompt (写操作 - 缓存失效)
-def update_prompt(db: Session, db_prompt: models.Prompt, prompt_update: schemas.PromptUpdate):
-    """更新一个已存在的 Prompt 记录。这个函数现在直接接收一个 SQLAlchemy 模型实例 (db_prompt)，而不是 prompt_id。更新 Prompt，并自动创建新版本，并清除缓存"""
+def update_prompt(
+    db: Session, db_prompt: models.Prompt, prompt_update: schemas.PromptUpdate
+):
+    """
+    更新一个已存在的 Prompt 记录。这个函数现在直接接收一个 SQLAlchemy 模型实例 (db_prompt)，而不是 prompt_id。
+    更新 Prompt，并自动创建新版本，并清除缓存
+    """
     # 1. 更新主表数据
     update_data = prompt_update.model_dump(exclude_unset=True)
     # 如果没有实际数据更新，直接返回
@@ -209,9 +245,11 @@ def update_prompt(db: Session, db_prompt: models.Prompt, prompt_update: schemas.
 
     # 2. 计算下一个版本号
     # 查询当前最大的版本号
-    last_version = db.query(func.max(models.PromptVersion.version_number))\
-                     .filter(models.PromptVersion.prompt_id == db_prompt.id)\
-                     .scalar()
+    last_version = (
+        db.query(func.max(models.PromptVersion.version_number))
+        .filter(models.PromptVersion.prompt_id == db_prompt.id)
+        .scalar()
+    )
     new_version_number = (last_version or 0) + 1
 
     # 3. 创建新版本快照
@@ -220,7 +258,7 @@ def update_prompt(db: Session, db_prompt: models.Prompt, prompt_update: schemas.
         version_number=new_version_number,
         title=db_prompt.title,
         content=db_prompt.content,
-        category=db_prompt.category
+        category=db_prompt.category,
     )
 
     db.add(db_prompt)  # 虽然 SQLAlchemy 跟踪了对象，但显式 add 更清晰
@@ -232,19 +270,28 @@ def update_prompt(db: Session, db_prompt: models.Prompt, prompt_update: schemas.
     cache.delete_prompt_cache(db_prompt.id)
     return db_prompt
 
+
 def get_prompt_versions(db: Session, prompt_id: int):
     """获取 Prompt 的所有版本"""
-    return db.query(models.PromptVersion)\
-             .filter(models.PromptVersion.prompt_id == prompt_id)\
-             .order_by(desc(models.PromptVersion.version_number))\
-             .all()
+    return (
+        db.query(models.PromptVersion)
+        .filter(models.PromptVersion.prompt_id == prompt_id)
+        .order_by(desc(models.PromptVersion.version_number))
+        .all()
+    )
+
 
 def get_prompt_version(db: Session, prompt_id: int, version_number: int):
     """获取特定版本"""
-    return db.query(models.PromptVersion)\
-             .filter(models.PromptVersion.prompt_id == prompt_id, 
-                     models.PromptVersion.version_number == version_number)\
-             .first()
+    return (
+        db.query(models.PromptVersion)
+        .filter(
+            models.PromptVersion.prompt_id == prompt_id,
+            models.PromptVersion.version_number == version_number,
+        )
+        .first()
+    )
+
 
 def rollback_prompt(db: Session, db_prompt: models.Prompt, version_number: int):
     """
@@ -260,32 +307,35 @@ def rollback_prompt(db: Session, db_prompt: models.Prompt, version_number: int):
     prompt_update = schemas.PromptUpdate(
         title=target_version.title,
         content=target_version.content,
-        category=target_version.category
+        category=target_version.category,
     )
-    
+
     # 复用 update_prompt 逻辑，它会自动处理“创建新版本”的逻辑
     return update_prompt(db, db_prompt, prompt_update)
+
 
 # 3. 优化 delete_prompt (删操作 - 缓存失效)
 def delete_prompt(db: Session, db_prompt: models.Prompt):
     """删除 Prompt 并清除缓存"""
-    prompt_id = db_prompt.id # 先记下 ID
+    prompt_id = db_prompt.id  # 先记下 ID
     db.delete(db_prompt)
     db.commit()
-    
+
     # --- 清除缓存 ---
     cache.delete_prompt_cache(prompt_id)
-    
+
     return None
 
+
 # ==================== PromptExecution CRUD (New) ====================
+
 
 def create_prompt_execution(
     db: Session,
     prompt_id: int,
     user_id: int,
     request_data: dict,
-    result: llm_client.LLMExecutionResult
+    result: llm_client.LLMExecutionResult,
 ) -> models.PromptExecution:
     """
     在数据库中创建一条 Prompt 执行记录。
@@ -296,20 +346,23 @@ def create_prompt_execution(
         request_data=request_data,
         response_text=result.content,
         token_usage=result.usage,
-        error_message=result.error
+        error_message=result.error,
     )
     db.add(db_execution)
     db.commit()
     db.refresh(db_execution)
     return db_execution
 
+
 def get_prompt_executions(db: Session, prompt_id: int, skip: int = 0, limit: int = 100):
     """
     获取某个 Prompt 的所有执行历史记录。
     """
-    return db.query(models.PromptExecution)\
-             .filter(models.PromptExecution.prompt_id == prompt_id)\
-             .order_by(models.PromptExecution.created_at.desc())\
-             .offset(skip)\
-             .limit(limit)\
-             .all()
+    return (
+        db.query(models.PromptExecution)
+        .filter(models.PromptExecution.prompt_id == prompt_id)
+        .order_by(models.PromptExecution.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )

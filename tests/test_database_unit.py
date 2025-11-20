@@ -18,7 +18,9 @@ async def test_lifespan_initializes_engine_and_session(monkeypatch):
     fake_session_factory = object()
 
     monkeypatch.setattr(database, "create_engine", lambda url: fake_engine)
-    monkeypatch.setattr(database, "sessionmaker", lambda *args, **kwargs: fake_session_factory)
+    monkeypatch.setattr(
+        database, "sessionmaker", lambda *args, **kwargs: fake_session_factory
+    )
     monkeypatch.setattr(database.Base.metadata, "create_all", MagicMock())
 
     app = SimpleNamespace(state=SimpleNamespace())
@@ -71,7 +73,9 @@ def test_get_db_yields_session_and_closes():
             self.closed = True
 
     session = _Session()
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(SessionLocal=lambda: session)))
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(SessionLocal=lambda: session))
+    )
 
     generator = database.get_db(request)
     yielded_session = next(generator)

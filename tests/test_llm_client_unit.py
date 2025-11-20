@@ -61,7 +61,9 @@ def test_execute_prompt_returns_error_when_client_missing(monkeypatch):
         ("RateLimitError", "rate limit"),
     ],
 )
-def test_execute_prompt_handles_known_client_errors(monkeypatch, exception_attr, message):
+def test_execute_prompt_handles_known_client_errors(
+    monkeypatch, exception_attr, message
+):
     class FakeError(Exception):
         pass
 

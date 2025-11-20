@@ -8,9 +8,10 @@ class Settings(BaseSettings):
     使用 Pydantic 管理环境变量，这个类会自动读取环境变量，并根据类型注解进行验证和转换。
     SettingsConfigDict 会自动查找 .env 文件
     """
+
     # model_config 指向一个配置字典，告诉 Pydantic 如何加载设置。
     # env_file='.env' 指定了从哪个文件加载环境变量。
-    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8')
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     # PostgreSQL 数据库配置
     # Pydantic 会自动查找并加载名为 POSTGRES_USER, POSTGRES_PASSWORD等的环境变量。
@@ -24,14 +25,17 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
 
     # --- 新增 ---
-    REDIS_URL: str = "redis://localhost:6379/0" # 默认值，防止本地运行报错
+    REDIS_URL: str = "redis://localhost:6379/0"  # 默认值，防止本地运行报错
 
     @property
     def database_url(self) -> str:
         """
         生成 SQLAlchemy 兼容的数据库连接字符串
         """
-        return f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        return (
+            f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
 
 
 @lru_cache()  # 缓存配置实例，避免重复读取.env
