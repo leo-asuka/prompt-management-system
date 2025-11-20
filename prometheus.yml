@@ -1,0 +1,10 @@
+# prometheus.yml
+global:
+  scrape_interval: 5s # 每5秒抓取一次数据 (为了演示效果，设快一点)
+
+scrape_configs:
+  - job_name: 'fastapi_app'
+    metrics_path: '/metrics'
+    static_configs:
+      # 注意：这里使用的是 docker-compose 中的服务名 'api' 和端口 '8000'
+      - targets: ['api:8000']

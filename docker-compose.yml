@@ -54,6 +54,19 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # --- 新增：Prometheus ---
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090" # Prometheus UI 端口
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    depends_on:
+      - api # 确保 API 启动后再抓取
+    restart: unless-stopped
+
 # 定义具名卷，用于数据持久化
 volumes:
   postgres_data: # 定义一个命名的 volume 用于数据持久化
