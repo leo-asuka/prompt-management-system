@@ -1,4 +1,4 @@
-# LLM-X-S2-L1
+﻿# LLM-X-S2-L1
 
 LLM-X 课程第二季-第一节课
 
@@ -5332,23 +5332,7 @@ services:
 
 至此，除了自定义创新功能外，你已经完成了所有**工程化、架构化、运维化**的高级挑战！你的项目现在是一个标准的微服务单元。
 
-### 10.目标：自定义创新功能(暂时未实现)
-
-提出并实现你自己的创新功能，例如：
-
-- Prompt Chain (多步骤执行)
-- 智能推荐系统
-- 多模态支持 (图片 Prompt)
-- WebSocket 实时协作
-- AI 驱动的 Prompt 优化建议
-
-**要求**：
-
-- 在 README 中详细说明功能设计
-- 提供使用示例
-- 根据实现质量和创新性评分
-
-## 😭 学习 GitHub Flow
+### 😭 学习 GitHub Flow
 
 作为 GitHub 项目管理的小白，理解 **GitHub Flow** 是从“写代码的人”进阶为“专业软件工程师”的最关键一步！
 
@@ -5368,7 +5352,7 @@ services:
 
 下面我为你详细拆解这 5 个步骤，结合你的 Prompt 管理系统项目：
 
-### 第一步：新建分支 (开辟辅路)
+#### 第一步：新建分支 (开辟辅路)
 
 虽然你代码已经写在工作区了，但我们不想直接提交到 `main` (或 `master`)。我们要带着这些修改进入一个新的分支。
 
@@ -5394,7 +5378,7 @@ git checkout -b feature/observability
     - 文档：`docs/update-readme`
   - **切记**：永远不要直接在 `main` 分支上写代码！
 
-### 第二步：进行代码修改 (在辅路上施工)
+#### 第二步：进行代码修改 (在辅路上施工)
 
 - **场景**：你在 VS Code 里写代码，修改了 `main.py`，增加了 `crud.py` 的函数等。
 - **状态**：这时候你的修改只存在于你的电脑上的“工作区”，还没有保存进版本历史，更没有影响到 `main` 分支。
@@ -5409,7 +5393,7 @@ git status
 git add .
 ```
 
-### 第三步：提交更改 (存档)
+#### 第三步：提交更改 (存档)
 
 **命令：**
 
@@ -5431,7 +5415,7 @@ git commit -m "feat(observability): add structured logging and prometheus metric
 - **为什么这么做**：这就好比玩游戏时的“存档”。如果你写乱了，可以回滚到这个存档点。
 - **注意**：这一步依然只是在你**本地电脑**的操作，GitHub 网站上还不知道你干了啥。
 
-### 第四步：推送到远程 (上传到云端)
+#### 第四步：推送到远程 (上传到云端)
 
 **命令：**
 
@@ -5448,7 +5432,7 @@ git push origin feature/observability
   - GitHub 网站上多了一个叫 `feature/add-new-endpoint` 的分支。
   - **关键点**：这时候你的 `main` 分支依然是干净的、旧的，新代码只在这个新分支里。
 
-### 第五步：创建 Pull Request (申请合并)
+#### 第五步：创建 Pull Request (申请合并)
 
 最关键的一步：这是 GitHub Flow 的灵魂，也是最“仪式感”的一步。这一步**不是在终端里做的，而是在 GitHub 网页上做的**。
 
@@ -5472,7 +5456,7 @@ git push origin feature/observability
 
 **结果**：你的新代码正式进入了 `main` 分支！
 
-### 第六步：闭环 (这是作业里没写，但必须做的一步)
+#### 第六步：闭环 (这是作业里没写，但必须做的一步)
 
 代码合并到 GitHub 的 `main` 后，你本地电脑的 `main` 还是旧的。你需要同步回来，并清理现场。
 
@@ -5507,7 +5491,7 @@ git push origin feature/observability
     git branch -d feature/observability
     ```
 
-### 总结：为什么你要这么做？
+#### 总结：为什么你要这么做？
 
 1. **安全**：`main` 分支永远是可运行的。即使你的新功能写挂了，也不会影响主程序的稳定性。
 2. **自动检查**：利用 PR 触发我们辛辛苦苦配置的 CI/CD（自动化测试），确保没有 Bug 混入主代码。
@@ -5515,7 +5499,7 @@ git push origin feature/observability
 
 这就是专业的 GitHub Flow！下次做新功能时，请务必尝试这个流程。
 
-### `error: cannot delete branch`
+#### `error: cannot delete branch`
 
 “你正站在这个树枝上，所以不能锯断它！”
 
@@ -5540,6 +5524,24 @@ git push origin feature/observability
 你会看到一列分支名。
 前面带星号 * 和高亮颜色的，就是你当前所在的分支。
 
-### `git checkout master` -> `error: Your local changes`
+#### `git checkout master` -> `error: Your local changes`
 
 “你手头还有没保存的工作（修改过的代码），如果现在切换分支，这些工作就会丢失（被覆盖）。Git 为了保护你的代码，阻止了这次切换。”
+
+#### 注意本地测试或者docker测试中新加入了库用于测试则 `LLM-X\LLM-X-Season2\Lesson1\prompt-management-system\.github\workflows\test.yml` 中依赖也需要随之更新
+
+### 10.目标：自定义创新功能(暂时未实现)
+
+提出并实现你自己的创新功能，例如：
+
+- Prompt Chain (多步骤执行)
+- 智能推荐系统
+- 多模态支持 (图片 Prompt)
+- WebSocket 实时协作
+- AI 驱动的 Prompt 优化建议
+
+**要求**：
+
+- 在 README 中详细说明功能设计
+- 提供使用示例
+- 根据实现质量和创新性评分
