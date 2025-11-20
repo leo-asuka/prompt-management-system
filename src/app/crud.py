@@ -7,6 +7,8 @@ from . import models, schemas, llm_client, cache
 from .models import Prompt
 import bcrypt
 
+from .logger import logger
+
 
 def _hash_password(password: str) -> str:
     """使用 bcrypt 生成一个哈希字符串，兼容当前依赖版本。"""
@@ -140,6 +142,15 @@ def create_prompt(db: Session, prompt: schemas.PromptCreate, user_id: int):
     )
     db.add(version)
     db.commit()
+    logger.info(
+        "Prompt created",
+        extra={
+            "action": "create_prompt",
+            "prompt_id": db_prompt.id,
+            "user_id": user_id,
+            "title": db_prompt.title,
+        },
+    )
     return db_prompt
 
 
@@ -267,7 +278,14 @@ def update_prompt(
     db.add(new_version)
     db.commit()
     db.refresh(db_prompt)
-
+    logger.info(
+        "Prompt updated",
+        extra={
+            "action": "update_prompt",
+            "prompt_id": db_prompt.id,
+            "new_version": new_version.version_number,
+        },
+    )
     # 清除缓存，因为数据变了，旧的缓存已经脏了，必须删除
     cache.delete_prompt_cache(db_prompt.id)
     return db_prompt
@@ -325,7 +343,9 @@ def delete_prompt(db: Session, db_prompt: models.Prompt):
 
     # --- 清除缓存 ---
     cache.delete_prompt_cache(prompt_id)
-
+    logger.info(
+        "Prompt deleted", extra={"action": "delete_prompt", "prompt_id": prompt_id}
+    )
     return None
 
 
@@ -353,6 +373,15 @@ def create_prompt_execution(
     db.add(db_execution)
     db.commit()
     db.refresh(db_execution)
+    logger.info(
+        "Prompt executed",
+        extra={
+            "action": "execute_prompt",
+            "prompt_id": prompt_id,
+            "user_id": user_id,
+            "tokens": result.usage,
+        },
+    )
     return db_execution
 
 
