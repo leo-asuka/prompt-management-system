@@ -1,5 +1,6 @@
 # src/app/main.py
-from fastapi import FastAPI, Depends, HTTPException, Query, Header
+import time
+from fastapi import FastAPI, Depends, HTTPException, Query, Header, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
@@ -19,6 +20,8 @@ from .schemas import (
     RatingResponse,
     PromptVersionResponse,
 )
+from prometheus_fastapi_instrumentator import Instrumentator
+from .logger import logger
 
 # 确保在 FastAPI 启动前，数据库表已经通过 Base.metadata 注册
 # models.Base.metadata.create_all(bind=engine)
@@ -29,6 +32,35 @@ app = FastAPI(
     version="0.3.0",
     lifespan=lifespan,
 )
+
+# --- 1. Prometheus 监控集成 ---
+# 自动为所有 API 端点添加 metrics 收集
+Instrumentator().instrument(app).expose(app)
+
+# --- 2. 请求日志中间件 ---
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    
+    # 处理请求
+    response = await call_next(request)
+    
+    process_time = (time.time() - start_time) * 1000
+    
+    # 记录结构化日志
+    # extra 字段会被自动合并到 JSON 顶层，非常方便查询
+    logger.info(
+        "HTTP Request",
+        extra={
+            "method": request.method,
+            "url": str(request.url),
+            "status_code": response.status_code,
+            "process_time_ms": round(process_time, 2),
+            "client_ip": request.client.host if request.client else "unknown",
+        }
+    )
+    
+    return response
 
 DBSession = Annotated[Session, Depends(get_db)]
 # CurrentUser = Annotated[models.User, Depends(crud.get_current_user)] # 使用 crud 中的函数
