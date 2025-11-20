@@ -43,8 +43,10 @@ def setup_for_llm_tests():
     user_frank = create_user_for_llm("frank_real", "pass_real_123")
     test_state["user_frank_id"] = user_frank["id"]
 
-    prompt_template = "In one short sentence, what is the core concept of the theory" \
-    " of relativity? Answer in the persona of a pirate."
+    prompt_template = (
+        "In one short sentence, what is the core concept of the theory"
+        " of relativity? Answer in the persona of a pirate."
+    )
     prompt = create_prompt_for_llm(
         user_frank["id"], "Pirate Scientist", prompt_template
     )
