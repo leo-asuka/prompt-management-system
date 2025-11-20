@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from src.app import database
-
+from src.app import models
 
 @pytest.mark.anyio("asyncio")
 async def test_lifespan_initializes_engine_and_session(monkeypatch):
@@ -21,7 +21,7 @@ async def test_lifespan_initializes_engine_and_session(monkeypatch):
     monkeypatch.setattr(
         database, "sessionmaker", lambda *args, **kwargs: fake_session_factory
     )
-    monkeypatch.setattr(database.Base.metadata, "create_all", MagicMock())
+    monkeypatch.setattr(models.Base.metadata, "create_all", MagicMock())
 
     app = SimpleNamespace(state=SimpleNamespace())
 
@@ -30,7 +30,7 @@ async def test_lifespan_initializes_engine_and_session(monkeypatch):
         assert app.state.SessionLocal is fake_session_factory
 
     fake_engine.dispose.assert_called_once()
-    database.Base.metadata.create_all.assert_called_once_with(bind=fake_engine)
+    models.Base.metadata.create_all.assert_called_once_with(bind=fake_engine)
 
 
 @pytest.mark.anyio("asyncio")
@@ -52,7 +52,7 @@ async def test_lifespan_retries_and_raises_when_db_unavailable(monkeypatch):
 
     monkeypatch.setattr(database, "create_engine", lambda url: flaky_engine)
     monkeypatch.setattr(database, "sessionmaker", lambda *args, **kwargs: None)
-    monkeypatch.setattr(database.Base.metadata, "create_all", MagicMock())
+    monkeypatch.setattr(models.Base.metadata, "create_all", MagicMock())
     monkeypatch.setattr(database.time, "sleep", lambda *_: None)
 
     app = SimpleNamespace(state=SimpleNamespace())
