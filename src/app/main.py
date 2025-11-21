@@ -8,7 +8,7 @@ from sqlalchemy.exc import OperationalError
 from typing import Annotated, Optional, List
 from .database import lifespan, get_db
 from . import models, crud, schemas
-from .llm_client import execute_prompt
+from .llm_client import execute_prompt, optimize_prompt_content
 from .schemas import (
     PromptCreate,
     PromptUpdate,
@@ -20,6 +20,8 @@ from .schemas import (
     RatingCreate,
     RatingResponse,
     PromptVersionResponse,
+    PromptOptimizeRequest,
+    PromptOptimizeResponse,
 )
 
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -251,6 +253,39 @@ async def list_prompt_executions_endpoint(
         db, prompt_id=prompt_id, skip=skip, limit=limit
     )
     return executions
+
+
+# ==================== AI Optimization Endpoints (New) ====================
+
+
+@app.post(
+    "/ai/optimize",
+    response_model=PromptOptimizeResponse,
+    summary="AI 智能提示词优化",
+)
+async def optimize_prompt_endpoint(
+    request: PromptOptimizeRequest,
+    current_user: CurrentUser,
+):
+    """
+    创新功能：智能提示词优化助手。
+
+    输入一个简单的想法（如“写个周报”），AI 将自动应用 CO-STAR 框架，
+    将其转化为结构清晰、效果更好的专业提示词。
+    """
+    result = optimize_prompt_content(request.original_content)
+
+    if not result.success:
+        raise HTTPException(status_code=500, detail=result.error)
+
+    usage = result.usage or {}
+    explanation = usage.get("explanation", "No explanation provided.")
+
+    return {
+        "original_content": request.original_content,
+        "optimized_content": result.content,
+        "changes_explanation": explanation,
+    }
 
 
 # ==================== Tag Endpoints ====================

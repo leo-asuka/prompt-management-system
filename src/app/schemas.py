@@ -146,3 +146,22 @@ class PromptExecutionResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ==================== AI Optimization Schemas ====================
+
+
+class PromptOptimizeRequest(BaseModel):
+    """请求优化 Prompt 的数据结构"""
+
+    original_content: str = Field(
+        ..., min_length=5, description="用户输入的原始、简单的提示词"
+    )
+
+
+class PromptOptimizeResponse(BaseModel):
+    """返回优化结果的数据结构"""
+
+    original_content: str
+    optimized_content: str = Field(..., description="经过 AI 优化后的高级提示词")
+    changes_explanation: str = Field(..., description="AI 解释它做了哪些修改和优化")

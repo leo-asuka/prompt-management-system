@@ -5530,18 +5530,269 @@ git push origin feature/observability
 
 #### 注意本地测试或者docker测试中新加入了库用于测试则 `LLM-X\LLM-X-Season2\Lesson1\prompt-management-system\.github\workflows\test.yml` 中依赖也需要随之更新
 
-### 10.目标：自定义创新功能(暂时未实现)
-
-提出并实现你自己的创新功能，例如：
+### 🌟 10.创新功能：AI 智能提示词优化助手 ("Smart Prompt Optimizer")
+<!-- 提出并实现你自己的创新功能，例如：
 
 - Prompt Chain (多步骤执行)
 - 智能推荐系统
 - 多模态支持 (图片 Prompt)
 - WebSocket 实时协作
-- AI 驱动的 Prompt 优化建议
+- AI 驱动的 Prompt 优化建议 -->
 
 **要求**：
 
 - 在 README 中详细说明功能设计
 - 提供使用示例
 - 根据实现质量和创新性评分
+
+**核心理念**：
+现在的系统是“管理”Prompt，但用户往往不知道怎么写好 Prompt。我们将利用 LLM 本身的能力，化身为“高级提示词工程师”，自动帮用户把一句简单的“帮我写个周报”，优化成结构清晰、包含角色设定、任务目标和输出限制的高级 Prompt。
+
+#### 第一步：Git 分支管理 (GitHub Flow)
+
+首先，严格遵守 GitHub Flow，为这个新功能开辟一条新的道路。
+
+```bash
+# 1. 确保当前在 master 分支且是最新的
+git checkout master
+git pull origin master
+
+# 2. 创建并切换到新分支
+git checkout -b feature/ai-optimizer
+```
+
+### 第二步：定义数据结构 (`src/app/schemas.py`)
+
+我们需要定义请求和响应的数据格式。
+
+在 `src/app/schemas.py` 的末尾添加：
+
+```python
+# src/app/schemas.py
+
+# ... (之前的代码) ...
+
+# ==================== AI Optimization Schemas ====================
+
+class PromptOptimizeRequest(BaseModel):
+    """请求优化 Prompt 的数据结构"""
+    original_content: str = Field(..., min_length=5, description="用户输入的原始、简单的提示词")
+
+class PromptOptimizeResponse(BaseModel):
+    """返回优化结果的数据结构"""
+    original_content: str
+    optimized_content: str = Field(..., description="经过 AI 优化后的高级提示词")
+    changes_explanation: str = Field(..., description="AI 解释它做了哪些修改和优化")
+```
+
+### 第三步：编写核心 AI 逻辑 (`src/app/llm_client.py`)
+
+编写一个 **Meta-Prompt (元提示词)**，指导 LLM 如何优化用户的输入。
+
+修改 `src/app/llm_client.py`，添加 `optimize_prompt_content` 函数：
+
+```python
+# src/app/llm_client.py
+
+# ... (之前的导入和 execute_prompt 函数保持不变) ...
+
+def optimize_prompt_content(original_content: str) -> LLMExecutionResult:
+    """
+    使用 LLM 将简单的提示词优化为结构化的高级提示词。
+    使用 Meta-Prompting 技术。
+    """
+    if not client:
+        return LLMExecutionResult(
+            success=False, error="OpenAI client " "is not initialized."
+        )
+    # --- Meta-Prompt 设计 ---
+    # 我们告诉 AI 它是一个提示词专家，并要求它按照特定结构输出
+    system_prompt = """
+    You are an expert Prompt Engineer.Your goal is to optimize the user's
+      simple draft prompt into a high-quality, structured prompt for an LLM.
+
+    Please follow these optimization rules (CO-STAR framework):
+    1. Context: Add necessary background info.
+    2. Objective: Clearly define the task.
+    3. Style: Define the tone/style.
+    4. Tone: Specify the emotional tone.
+    5. Audience: Identify who is reading this.
+    6. Response: Specify the format (e.g., list, markdown, code).
+
+    IMPORTANT: Your output must be purely the optimized prompt content,
+    followed by a separator '---EXPLANATION---', and then a brief explanation of changes.
+    """
+
+    user_message = f"Please optimize this draft prompt: '{original_content}'"
+
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            model="gpt-3.5-turbo",
+            temperature=0.7,
+        )
+
+        raw_content = chat_completion.choices[0].message.content
+
+        if raw_content and "---EXPLANATION---" in raw_content:
+            optimized, explanation = raw_content.split("---EXPLANATION---", 1)
+            return LLMExecutionResult(
+                success=True,
+                content=optimized.strip(),
+                usage={"explanation": explanation.strip()},
+            )
+
+        return LLMExecutionResult(
+            success=True,
+            content=raw_content,
+            usage={"explanation": "AI provided no specific explanation."},
+        )
+
+    except Exception as e:
+        return LLMExecutionResult(success=False, error=f"Optimization failed: {e}")
+```
+
+### 第四步：添加 API 端点 (`src/app/main.py`)
+
+我们需要把这个功能暴露给用户。这个端点不需要查数据库，它是一个纯粹的工具接口。
+
+修改 `src/app/main.py`:
+
+```python
+# src/app/main.py
+
+# ... 导入部分 ...
+from .llm_client import execute_prompt, optimize_prompt_content # 导入新函数
+from .schemas import (
+    # ... 其他 schemas ...
+    PromptOptimizeRequest, PromptOptimizeResponse # 导入新 schemas
+)
+
+# ...
+
+# ==================== AI Optimization Endpoints (New) ====================
+
+@app.post("/ai/optimize", response_model=PromptOptimizeResponse, summary="AI 智能提示词优化")
+async def optimize_prompt_endpoint(
+    request: PromptOptimizeRequest,
+    current_user: CurrentUser # 依然需要登录才能使用，防止滥用
+):
+    """
+    **创新功能**：智能提示词优化助手。
+    
+    输入一个简单的想法（如“写个周报”），AI 将自动应用 CO-STAR 框架，
+    将其转化为结构清晰、效果更好的专业提示词。
+    """
+    result = optimize_prompt_content(request.original_content)
+    
+    if not result.success:
+        raise HTTPException(status_code=500, detail=result.error)
+    
+    # 从我们刚才的小 Hack 中取出 explanation
+    explanation = result.usage.get("explanation", "No explanation provided.")
+    
+    return {
+        "original_content": request.original_content,
+        "optimized_content": result.content,
+        "changes_explanation": explanation
+    }
+
+# ... (其余代码) ...
+```
+
+### 第五步：更新 README.md
+
+在 `README.md` 的 **API 端点列表** 或 **主要功能** 章节之后，添加一个新的章节：
+
+```markdown
+## 🌟 创新功能：AI 智能提示词优化助手
+
+本项目不仅仅是一个 CRUD 管理系统，还集成了 **AI 驱动的 Prompt 优化引擎**。
+
+针对用户经常写出低质量 Prompt（如 "帮我写个文案"）的问题，我实现了一个基于 **Meta-Prompting (元提示词)** 技术的优化管道。该功能利用 LLM 自动应用 **CO-STAR 原则** (Context, Objective, Style, Tone, Audience, Response)，将用户的简单输入转化为专业级指令。
+
+**使用示例：**
+
+*   **输入**: "给我写个贪吃蛇游戏"
+*   **AI 优化后输出**: 
+    > "作为一名资深 Python 开发者（Context），请帮我编写一个基于 Pygame 库的贪吃蛇游戏（Objective）。代码需要包含详细的注释，代码风格需符合 PEP 8 规范（Style）。请确保游戏包含计分系统和简单的开始界面（Response）。"
+
+**API 端点**: `POST /ai/optimize`
+```
+
+![alt text](_image/_001_usageExample.png)
+
+### 第六步：验证与测试
+
+1. **重启服务**：
+
+    ```bash
+    docker compose down -v
+    docker compose up --build
+    ```
+
+2. **手动测试 (Swagger UI)**：
+    - 打开 `http://localhost:8002/docs`。
+    - 找到 `/ai/optimize`。
+    - 输入 `{"original_content": "explain quantum physics"}`。
+    - 看看它是否返回了长长的一段优化后的 Prompt。
+
+3. **编写自动化测试**：
+    为了完美收官，在 `tests/test_all_func.py` 的末尾添加一个测试用例。
+
+```python
+# tests/test_all_func.py
+
+# ...
+
+# ==========================================
+# 7. 创新功能：AI 优化 (Innovation)
+# ==========================================
+@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="No OpenAI Key")
+def test_07_ai_optimization():
+    """验证 AI 提示词优化功能"""
+    print("\n--- [Step 7] Testing AI Optimization (Innovation) ---")
+    user_id = test_state["user_id"]
+    headers = {"X-User-ID": str(user_id)}
+    
+    payload = {"original_content": "Write a poem about coding."}
+    
+    with httpx.Client() as client:
+        res = client.post(f"{BASE_URL}/ai/optimize", json=payload, headers=headers)
+        
+        if res.status_code == 200:
+            data = res.json()
+            print(f"   Original: {data['original_content']}")
+            print(f"   Optimized: {data['optimized_content'][:50]}...")
+            print(f"   Reason: {data['changes_explanation'][:50]}...")
+            
+            assert len(data["optimized_content"]) > len(data["original_content"])
+            assert data["changes_explanation"] is not None
+        else:
+            print("   Optimization API failed (Check API Key)")
+
+    print("✅ AI Optimization passed")
+```
+
+### 第七步：提交与合并
+
+完成上述所有步骤后：
+
+```bash
+# 1. 运行测试确保一切正常
+./test.sh
+
+# 2. 提交代码
+git add .
+git commit -m "feat(innovation): add AI-driven prompt optimizer using meta-prompting"
+
+# 3. 推送到远程
+git push origin feature/ai-optimizer
+
+# 4. 去 GitHub 提 PR 并合并 (Follow GitHub Flow)
+```
+
+做完这一切，你的作业不仅是满分，更是一个可以在简历上大书特书的亮点了！加油！
