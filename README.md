@@ -139,39 +139,41 @@ chmod +x test.sh
 
 **使用示例：**
 
-*   **输入**: "给我写个贪吃蛇游戏"
-*   **AI 优化后输出**: 
+- **输入**: "给我写个贪吃蛇游戏"
+- **AI 优化后输出**:
     > "作为一名资深 Python 开发者（Context），请帮我编写一个基于 Pygame 库的贪吃蛇游戏（Objective）。代码需要包含详细的注释，代码风格需符合 PEP 8 规范（Style）。请确保游戏包含计分系统和简单的开始界面（Response）。"
 
 **API 端点**: `POST /ai/optimize`
+
+![alt text](_image/_001_usageExample.png)
 
 ## 环境变量
 
 所有配置项都通过 `.env` 文件管理，由 Pydantic 在 `src/app/config.py` 中加载。
 
-| 变量                | 说明                               | 示例                   |
-| ------------------- | ---------------------------------- | ---------------------- |
-| `POSTGRES_USER`     | Postgres 用户名                    | `myuser`               |
-| `POSTGRES_PASSWORD` | Postgres 密码                      | `mypassword123`        |
-| `POSTGRES_SERVER`   | 数据库主机（Compose 内使用服务名） | `db`                   |
-| `POSTGRES_PORT`     | 数据库端口                         | `5432`                 |
-| `POSTGRES_DB`       | 数据库名称                         | `ai_eng_db`            |
-| `OPENAI_API_KEY`    | OpenAI Key（可用代理或直连）       | `sk-xxxx`              |
-| `REDIS_URL`         | Redis 连接串                       | `redis://redis:6379/0` |
+| 变量                | 说明                               | 示例                    |
+| ------------------- | ---------------------------------- | ----------------------- |
+| `POSTGRES_USER`     | Postgres 用户名                    | `myuser`                |
+| `POSTGRES_PASSWORD` | Postgres 密码                      | `mypassword123`         |
+| `POSTGRES_SERVER`   | 数据库主机（Compose 内使用服务名） | `db`                    |
+| `POSTGRES_PORT`     | 数据库端口                         | `5432`                  |
+| `POSTGRES_DB`       | 数据库名称                         | `ai_eng_db`             |
+| `OPENAI_API_KEY`    | OpenAI Key（可用代理或直连）       | `sk-xxxx`               |
+| `REDIS_URL`         | Redis 连接串                       | `redis://redis:63`79/0` |
 
 ## 进阶功能完成度（对应作业选项）
 
 - 选项 1：用户与权限 ✅ 简易认证头、作者权限校验、用户维度查询
 - 选项 2：标签系统 ✅ 标签 CRUD、提示词打标/解绑、按标签过滤
 - 选项 3：LLM API 集成 ✅ Jinja2 模板替换 + OpenAI Chat 调用 + 执行历史/用量记录
-- 选项 4：评分系统 ✅ 唯一评分约束、平均分计算、按评分排序
+- 选项 4：评分系统 ✅ 唯一评分约~束、平均分计算、按评分排序`
 - 选项 5：Prompt 版本管理 ✅ 自动版本快照、版本查询、回滚生成新版本
 - 选项 6：性能优化与缓存 ✅ Redis 缓存提示词详情、更新/删除失效、核心索引；（未实现：游标分页）
 - 选项 7：高级测试 ✅ 覆盖率 ~89%，涵盖 CRUD/LLM/缓存/数据库/性能
 - 选项 8：CI/CD ✅ GitHub Actions 持续集成，包含 black/flake8 + docker-compose + pytest + 覆盖率
 - 选项 9：监控与日志 ✅ JSON 请求日志中间件、关键操作打点、Prometheus 指标暴露及配置模板
 - 选项 10：自定义功能 暂未添加，可按需扩展（如 Prompt Chain、推荐等）
-- 
+-
 
 ## GitHub Flow 实践
 

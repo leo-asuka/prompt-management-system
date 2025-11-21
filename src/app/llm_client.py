@@ -120,8 +120,8 @@ def optimize_prompt_content(original_content: str) -> LLMExecutionResult:
     5. Audience: Identify who is reading this.
     6. Response: Specify the format (e.g., list, markdown, code).
 
-    IMPORTANT: Your output must be purely the optimized prompt content,
-    followed by a separator '---EXPLANATION---', and then a brief explanation of changes.
+    IMPORTANT: Your output must be purely the optimized prompt content,followed
+    by a separator '---EXPLANATION---', and then a brief explanation of changes.
     """
 
     user_message = f"Please optimize this draft prompt: '{original_content}'"
