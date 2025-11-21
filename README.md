@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.111.0-009688)
 
-基于 FastAPI + PostgreSQL + Redis 的 Prompt 管理后端，支持提示词的创建、模板化执行、评分、版本管理与标签体系，并内置 LLM 调用、缓存、日志与监控。项目通过 Docker Compose 一键拉起（含 Postgres / Redis / Prometheus），配套完善的 pytest 用例与 CI 流水线，便于在课程作业或个人项目中直接复用。
+基于 FastAPI + PostgreSQL + Redis 的 Prompt 管理后端，支持提示词的创建、模板化执行、评分、版本管理与标签体系，并内置 LLM 调用、缓存、日志与监控。项目通过 Docker Compose 一键拉起（含 Postgres / Redis / Prometheus），配套完善的 pytest 用例与 CI 流水线，便于在课程作业或个人项目中直接复用。本项目不仅仅是一个 CRUD 管理系统，还集成了 **AI 驱动的 Prompt 优化引擎**。针对用户经常写出低质量 Prompt（如 "帮我写个文案"）的问题，我实现了一个基于 **Meta-Prompting (元提示词)** 技术的优化管道。该功能利用 LLM 自动应用 **CO-STAR 原则** (Context, Objective, Style, Tone, Audience, Response)，将用户的简单输入转化为专业级指令。
 
 ## 功能亮点
 
@@ -131,6 +131,20 @@ chmod +x test.sh
 - `GET /prompts/{id}/versions/{version}` 查看指定版本
 - `POST /prompts/{id}/rollback/{version}` 回滚到旧版本（会生成新版本，需作者权限）
 
+## 🌟 创新功能：AI 智能提示词优化助手
+
+本项目不仅仅是一个 CRUD 管理系统，还集成了 **AI 驱动的 Prompt 优化引擎**。
+
+针对用户经常写出低质量 Prompt（如 "帮我写个文案"）的问题，我们实现了一个基于 **Meta-Prompting (元提示词)** 技术的优化管道。该功能利用 LLM 自动应用 **CO-STAR 原则** (Context, Objective, Style, Tone, Audience, Response)，将用户的简单输入转化为专业级指令。
+
+**使用示例：**
+
+*   **输入**: "给我写个贪吃蛇游戏"
+*   **AI 优化后输出**: 
+    > "作为一名资深 Python 开发者（Context），请帮我编写一个基于 Pygame 库的贪吃蛇游戏（Objective）。代码需要包含详细的注释，代码风格需符合 PEP 8 规范（Style）。请确保游戏包含计分系统和简单的开始界面（Response）。"
+
+**API 端点**: `POST /ai/optimize`
+
 ## 环境变量
 
 所有配置项都通过 `.env` 文件管理，由 Pydantic 在 `src/app/config.py` 中加载。
@@ -157,6 +171,7 @@ chmod +x test.sh
 - 选项 8：CI/CD ✅ GitHub Actions 持续集成，包含 black/flake8 + docker-compose + pytest + 覆盖率
 - 选项 9：监控与日志 ✅ JSON 请求日志中间件、关键操作打点、Prometheus 指标暴露及配置模板
 - 选项 10：自定义功能 暂未添加，可按需扩展（如 Prompt Chain、推荐等）
+- 
 
 ## GitHub Flow 实践
 

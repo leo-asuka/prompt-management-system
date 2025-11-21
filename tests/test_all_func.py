@@ -205,3 +205,32 @@ def test_06_llm_execution():
             print("   LLM Call failed (Check API Key or Network)")
 
     print("✅ LLM Integration passed")
+
+
+# ==========================================
+# 7. 创新功能：AI 优化 (Innovation)
+# ==========================================
+@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="No OpenAI Key")
+def test_07_ai_optimization():
+    """验证 AI 提示词优化功能"""
+    print("\n--- [Step 7] Testing AI Optimization (Innovation) ---")
+    user_id = test_state["user_id"]
+    headers = {"X-User-ID": str(user_id)}
+
+    payload = {"original_content": "Write a poem about coding."}
+
+    with httpx.Client() as client:
+        res = client.post(f"{BASE_URL}/ai/optimize", json=payload, headers=headers)
+
+        if res.status_code == 200:
+            data = res.json()
+            print(f"   Original: {data['original_content']}")
+            print(f"   Optimized: {data['optimized_content'][:50]}...")
+            print(f"   Reason: {data['changes_explanation'][:50]}...")
+
+            assert len(data["optimized_content"]) > len(data["original_content"])
+            assert data["changes_explanation"] is not None
+        else:
+            print("   Optimization API failed (Check API Key)")
+
+    print("✅ AI Optimization passed")

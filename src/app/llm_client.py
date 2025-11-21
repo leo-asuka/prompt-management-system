@@ -95,3 +95,62 @@ def execute_prompt(prompt_content: str, variables: dict) -> LLMExecutionResult:
         return LLMExecutionResult(
             success=False, error=f"An unexpected error occurred: {e}"
         )
+
+
+def optimize_prompt_content(original_content: str) -> LLMExecutionResult:
+    """
+    使用 LLM 将简单的提示词优化为结构化的高级提示词。
+    使用 Meta-Prompting 技术。
+    """
+    if not client:
+        return LLMExecutionResult(
+            success=False, error="OpenAI client " "is not initialized."
+        )
+    # --- Meta-Prompt 设计 ---
+    # 我们告诉 AI 它是一个提示词专家，并要求它按照特定结构输出
+    system_prompt = """
+    You are an expert Prompt Engineer.Your goal is to optimize the user's
+      simple draft prompt into a high-quality, structured prompt for an LLM.
+
+    Please follow these optimization rules (CO-STAR framework):
+    1. Context: Add necessary background info.
+    2. Objective: Clearly define the task.
+    3. Style: Define the tone/style.
+    4. Tone: Specify the emotional tone.
+    5. Audience: Identify who is reading this.
+    6. Response: Specify the format (e.g., list, markdown, code).
+
+    IMPORTANT: Your output must be purely the optimized prompt content,
+    followed by a separator '---EXPLANATION---', and then a brief explanation of changes.
+    """
+
+    user_message = f"Please optimize this draft prompt: '{original_content}'"
+
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            model="gpt-3.5-turbo",
+            temperature=0.7,
+        )
+
+        raw_content = chat_completion.choices[0].message.content
+
+        if raw_content and "---EXPLANATION---" in raw_content:
+            optimized, explanation = raw_content.split("---EXPLANATION---", 1)
+            return LLMExecutionResult(
+                success=True,
+                content=optimized.strip(),
+                usage={"explanation": explanation.strip()},
+            )
+
+        return LLMExecutionResult(
+            success=True,
+            content=raw_content,
+            usage={"explanation": "AI provided no specific explanation."},
+        )
+
+    except Exception as e:
+        return LLMExecutionResult(success=False, error=f"Optimization failed: {e}")
